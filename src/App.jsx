@@ -25,11 +25,15 @@ import {
 } from 'lucide-react';
 import bwipjs from 'bwip-js';
 import jsQR from 'jsqr';
+import * as pdfjsLib from 'pdfjs-dist';
+
+// Konfigurasi Worker PDF.js via CDN
+pdfjsLib.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('text');
   
-  // STATE SETTING PRINTER REAL-TIME
+  // STATE SETTING PRINTER
   const [printerSettings, setPrinterSettings] = useState(() => {
     const saved = localStorage.getItem('thermal_printer_settings');
     return saved ? JSON.parse(saved) : {
@@ -43,16 +47,15 @@ export default function App() {
   });
 
   const [isScanningBluetooth, setIsScanningBluetooth] = useState(false);
-  const [bluetoothStatus, setBluetoothStatus] = useState('disconnected'); // 'disconnected' | 'connecting' | 'connected'
+  const [bluetoothStatus, setBluetoothStatus] = useState('disconnected');
   const [showDeviceModal, setShowDeviceModal] = useState(false);
   const [bluetoothError, setBluetoothError] = useState(null);
 
-  // STATE FITUR TEXT BEBAS
+  // STATE TEKS & ALAMAT
   const [freeText, setFreeText] = useState('');
   const [textSize, setTextSize] = useState(20);
   const [savedTexts, setSavedTexts] = useState([]);
 
-  // STATE FITUR ALAMAT
   const [addressData, setAddressData] = useState({
     penerima: 'Andi Teile\nJl. Raya Saketi Km.07 Kp.Pagenggang Babakan Rt.020/002\nKab. Lebak, Banten, 42391',
     pengirim: 'Toko Berkah Utama\nJl. Merdeka No. 45 Tangerang',
@@ -62,22 +65,22 @@ export default function App() {
     catatan: 'Jangan dibanting, barang pecah belah',
   });
 
-  // STATE FITUR IMAGE & DETEKSI BARCODE
+  // STATE GAMBAR & PDF
   const [uploadedImageSrc, setUploadedImageSrc] = useState(null);
+  const [pdfCanvasImage, setPdfCanvasImage] = useState(null);
+  const [isLoadingPdf, setIsLoadingPdf] = useState(false);
   const [detectedBarcodeText, setDetectedBarcodeText] = useState(null);
   const [showDetectedBarcode, setShowDetectedBarcode] = useState(true);
 
-  // STATE PREVIEW & FILTER THERMAL
+  // STATE PREVIEW & FILTER
   const [blackSlider, setBlackSlider] = useState(50);
   const [whiteSlider, setWhiteSlider] = useState(50);
   const [rotationAngle, setRotationAngle] = useState(0);
   const [printCopies, setPrintCopies] = useState(1);
 
-  // Canvas Refs
   const mainCanvasRef = useRef(null);
   const barcodeCanvasRef = useRef(null);
 
-  // Simpan Setting Printer ke LocalStorage setiap ada perubahan
   useEffect(() => {
     localStorage.setItem('thermal_printer_settings', JSON.stringify(printerSettings));
   }, [printerSettings]);
@@ -89,19 +92,18 @@ export default function App() {
     }
   }, []);
 
-  // FUNGSI SCAN PRINTER BLUETOOTH MENGGUNAKAN WEB BLUETOOTH API REAL
+  // FITUR SCAN BLUETOOTH BROWSER
   const handleScanBluetooth = async () => {
     setBluetoothError(null);
     setIsScanningBluetooth(true);
 
     if (!navigator.bluetooth) {
-      setBluetoothError('Web Bluetooth API tidak didukung di browser ini. Gunakan Chrome di Android/PC atau sambungkan via RawBT.');
+      setBluetoothError('Web Bluetooth API tidak didukung di browser ini. Pastikan memakai Chrome Android/PC.');
       setIsScanningBluetooth(false);
       return;
     }
 
     try {
-      // Membaca sinyal Bluetooth dari perangkat sekitar
       const device = await navigator.bluetooth.requestDevice({
         acceptAllDevices: true,
         optionalServices: ['000018f0-0000-1000-8000-00805f9b34fb', '49535343-fe7d-4ae5-8fa9-9fafd205e455']
@@ -109,14 +111,11 @@ export default function App() {
 
       if (device) {
         setBluetoothStatus('connecting');
-        
-        // Simpan nama printer yang ditemukan
         const updatedSettings = {
           ...printerSettings,
           printerName: device.name || `Printer (${device.id.slice(0, 8)})`,
           printerId: device.id
         };
-        
         setPrinterSettings(updatedSettings);
         setBluetoothStatus('connected');
         setShowDeviceModal(false);
@@ -130,56 +129,88 @@ export default function App() {
     }
   };
 
-  const handleSaveText = () => {
-    if (!freeText.trim()) return;
-    const newSaved = [...savedTexts, { id: Date.now(), text: freeText, size: textSize }];
-    setSavedTexts(newSaved);
-    localStorage.setItem('thermal_saved_texts', JSON.stringify(newSaved));
-    alert('Teks berhasil disimpan!');
-  };
-
-  const handleDeleteSavedText = (id) => {
-    const filtered = savedTexts.filter(item => item.id !== id);
-    setSavedTexts(filtered);
-    localStorage.setItem('thermal_saved_texts', JSON.stringify(filtered));
-  };
-
+  // UPLOAD FILE GAMBAR & ESTRAKSI BARCODE
   const handleImageUpload = (e) => {
     const file = e.target.files[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        const imgSrc = event.target.result;
-        setUploadedImageSrc(imgSrc);
-        setActiveTab('preview');
+    if (!file) return;
 
-        const img = new Image();
-        img.src = imgSrc;
-        img.onload = () => {
-          const tempCanvas = document.createElement('canvas');
-          const tempCtx = tempCanvas.getContext('2d');
-          tempCanvas.width = img.width;
-          tempCanvas.height = img.height;
-          tempCtx.drawImage(img, 0, 0);
-          
-          const imgData = tempCtx.getImageData(0, 0, tempCanvas.width, tempCanvas.height);
-          const code = jsQR(imgData.data, imgData.width, imgData.height);
-          
-          if (code) {
-            setDetectedBarcodeText(code.data);
-            setShowDetectedBarcode(true);
-          } else {
-            setDetectedBarcodeText(null);
-            setShowDetectedBarcode(false);
-          }
-        };
+    if (file.type === 'application/pdf') {
+      handlePdfUpload(file);
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const imgSrc = event.target.result;
+      setUploadedImageSrc(imgSrc);
+      setPdfCanvasImage(null);
+      setActiveTab('preview');
+
+      const img = new Image();
+      img.src = imgSrc;
+      img.onload = () => {
+        const tempCanvas = document.createElement('canvas');
+        const tempCtx = tempCanvas.getContext('2d');
+        tempCanvas.width = img.width;
+        tempCanvas.height = img.height;
+        tempCtx.drawImage(img, 0, 0);
+        
+        const imgData = tempCtx.getImageData(0, 0, tempCanvas.width, tempCanvas.height);
+        const code = jsQR(imgData.data, imgData.width, imgData.height);
+        
+        if (code) {
+          setDetectedBarcodeText(code.data);
+          setShowDetectedBarcode(true);
+        } else {
+          setDetectedBarcodeText(null);
+          setShowDetectedBarcode(false);
+        }
       };
-      reader.readAsDataURL(file);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  // RENDERING PDF DENGAN PDF.JS
+  const handlePdfUpload = async (file) => {
+    setIsLoadingPdf(true);
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+      const page = await pdf.getPage(1); // Render halaman pertama
+
+      const viewport = page.getViewport({ scale: 2.0 });
+      const tempCanvas = document.createElement('canvas');
+      const tempCtx = tempCanvas.getContext('2d');
+      tempCanvas.width = viewport.width;
+      tempCanvas.height = viewport.height;
+
+      await page.render({ canvasContext: tempCtx, viewport }).promise;
+
+      const pdfImgDataUrl = tempCanvas.toDataURL('image/png');
+      setPdfCanvasImage(pdfImgDataUrl);
+      setUploadedImageSrc(null);
+      setActiveTab('preview');
+
+      // Deteksi Barcode dari PDF
+      const imgData = tempCtx.getImageData(0, 0, tempCanvas.width, tempCanvas.height);
+      const code = jsQR(imgData.data, imgData.width, imgData.height);
+      if (code) {
+        setDetectedBarcodeText(code.data);
+        setShowDetectedBarcode(true);
+      } else {
+        setDetectedBarcodeText(null);
+        setShowDetectedBarcode(false);
+      }
+    } catch (err) {
+      alert('Gagal membaca PDF: ' + err.message);
+    } finally {
+      setIsLoadingPdf(false);
     }
   };
 
+  // BARCODE GENERATOR
   useEffect(() => {
-    const activeCode = uploadedImageSrc ? detectedBarcodeText : addressData.kodeBooking;
+    const activeCode = (uploadedImageSrc || pdfCanvasImage) ? detectedBarcodeText : addressData.kodeBooking;
     if (showDetectedBarcode && barcodeCanvasRef.current && activeCode) {
       try {
         bwipjs.toCanvas(barcodeCanvasRef.current, {
@@ -189,12 +220,11 @@ export default function App() {
           height: 12,
           includetext: false,
         });
-      } catch (e) {
-        console.error("Error Barcode:", e);
-      }
+      } catch (e) {}
     }
-  }, [showDetectedBarcode, detectedBarcodeText, addressData.kodeBooking, uploadedImageSrc, activeTab]);
+  }, [showDetectedBarcode, detectedBarcodeText, addressData.kodeBooking, uploadedImageSrc, pdfCanvasImage, activeTab]);
 
+  // RENDER CANVAS PREVIEW CETAK
   useEffect(() => {
     if (activeTab === 'preview' && mainCanvasRef.current) {
       const canvas = mainCanvasRef.current;
@@ -207,10 +237,12 @@ export default function App() {
 
       canvas.width = width;
       
-      if (uploadedImageSrc) {
+      const activeSrc = uploadedImageSrc || pdfCanvasImage;
+
+      if (activeSrc) {
         const img = new Image();
         img.crossOrigin = 'anonymous';
-        img.src = uploadedImageSrc;
+        img.src = activeSrc;
         img.onload = () => {
           const aspectRatio = img.height / img.width;
           canvas.height = width * aspectRatio;
@@ -257,7 +289,7 @@ export default function App() {
         applyThermalFilter(ctx, canvas.width, canvas.height);
       }
     }
-  }, [activeTab, blackSlider, whiteSlider, printerSettings, addressData, freeText, textSize, uploadedImageSrc]);
+  }, [activeTab, blackSlider, whiteSlider, printerSettings, addressData, freeText, textSize, uploadedImageSrc, pdfCanvasImage]);
 
   const applyThermalFilter = (ctx, width, height) => {
     const imageData = ctx.getImageData(0, 0, width, height);
@@ -283,23 +315,30 @@ export default function App() {
     setRotationAngle(0);
   };
 
+  // LOGIKA CETAK AMAN TANPA RAWBT DIPAKSA
   const handlePrint = () => {
     if (!mainCanvasRef.current) return;
     const canvas = mainCanvasRef.current;
     const dataUrl = canvas.toDataURL('image/png');
-    const isAndroid = /Android/i.test(navigator.userAgent);
-    
-    if (isAndroid) {
-      const base64Image = dataUrl.replace(/^data:image\/(png|jpg);base64,/, "");
-      window.location.href = `intent:${base64Image}#Intent;scheme=rawbt;package=ru.a404m.rawbtprinter;S.jobName=ThermalPrint;end;`;
-    } else {
-      const win = window.open('');
-      win.document.write(`<img src="${dataUrl}" onload="window.print();window.close()"/>`);
+
+    // Buka jendela baru untuk print cetak langsung browser HP/PC
+    const win = window.open('');
+    if (win) {
+      win.document.write(`
+        <html>
+          <head><title>Print Thermal</title></head>
+          <body style="margin:0;display:flex;justify-content:center;align-items:center;">
+            <img src="${dataUrl}" style="max-width:100%;" onload="window.print();window.close();"/>
+          </body>
+        </html>
+      `);
       win.focus();
+    } else {
+      alert('Izinkan pop-up browser untuk melakukan pencetakan.');
     }
   };
 
-  const activeDisplayCode = uploadedImageSrc ? detectedBarcodeText : addressData.kodeBooking;
+  const activeDisplayCode = (uploadedImageSrc || pdfCanvasImage) ? detectedBarcodeText : addressData.kodeBooking;
 
   return (
     <div className="flex flex-col h-screen bg-gray-100 font-sans max-w-md mx-auto shadow-lg overflow-hidden relative">
@@ -324,7 +363,7 @@ export default function App() {
       {/* BODY CONTENT */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
         
-        {/* TAB TEXT BEBAS */}
+        {/* TAB TEXT */}
         {activeTab === 'text' && (
           <div className="space-y-4">
             <div className="flex items-center gap-3 bg-white p-3 rounded-lg border">
@@ -343,28 +382,17 @@ export default function App() {
               className="w-full p-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-800 text-gray-800 bg-white"
             />
             <button 
-              onClick={handleSaveText}
+              onClick={() => {
+                if (!freeText.trim()) return;
+                const newSaved = [...savedTexts, { id: Date.now(), text: freeText, size: textSize }];
+                setSavedTexts(newSaved);
+                localStorage.setItem('thermal_saved_texts', JSON.stringify(newSaved));
+                alert('Teks berhasil disimpan!');
+              }}
               className="w-full bg-teal-800 text-white py-2 rounded-lg flex items-center justify-center gap-2 text-sm font-medium hover:bg-teal-900"
             >
               <Save size={16} /> Simpan Teks
             </button>
-            {savedTexts.length > 0 && (
-              <div className="bg-white p-3 rounded-lg border space-y-2">
-                <h3 className="text-xs font-bold text-gray-500 uppercase">Teks Tersimpan</h3>
-                <div className="space-y-2 max-h-40 overflow-y-auto">
-                  {savedTexts.map((item) => (
-                    <div key={item.id} className="flex justify-between items-center p-2 bg-gray-50 rounded border text-sm">
-                      <span className="cursor-pointer flex-1 truncate pr-2" onClick={() => { setFreeText(item.text); setTextSize(item.size); }}>
-                        {item.text}
-                      </span>
-                      <button onClick={() => handleDeleteSavedText(item.id)} className="text-red-500 p-1 hover:bg-red-50 rounded">
-                        <Trash2 size={16} />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
           </div>
         )}
 
@@ -389,86 +417,57 @@ export default function App() {
                 <input type="text" value={addressData.kodeBooking} onChange={(e) => setAddressData({...addressData, kodeBooking: e.target.value})} className="w-full p-2 border rounded bg-white text-sm" />
               </div>
             </div>
-            <div>
-              <label className="text-xs font-semibold text-gray-600">Isi Paket</label>
-              <input type="text" value={addressData.isiPaket} onChange={(e) => setAddressData({...addressData, isiPaket: e.target.value})} className="w-full p-2 border rounded bg-white text-sm" />
-            </div>
-            <div>
-              <label className="text-xs font-semibold text-gray-600">Catatan</label>
-              <input type="text" value={addressData.catatan} onChange={(e) => setAddressData({...addressData, catatan: e.target.value})} className="w-full p-2 border rounded bg-white text-sm" />
-            </div>
           </div>
         )}
 
         {/* TAB IMAGE & PDF */}
         {(activeTab === 'image' || activeTab === 'pdf') && (
           <div className="flex flex-col items-center justify-center p-8 border-2 border-dashed border-gray-300 rounded-lg bg-white space-y-3">
-            <Upload size={40} className="text-gray-400" />
-            <p className="text-sm text-gray-600 font-medium">
-              Upload file {activeTab === 'image' ? 'Gambar Resi (JPG/PNG)' : 'Dokumen PDF'}
-            </p>
-            <input 
-              type="file" 
-              accept={activeTab === 'image' ? 'image/*' : 'application/pdf'} 
-              onChange={handleImageUpload}
-              className="text-xs text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-teal-50 file:text-teal-800 hover:file:bg-teal-100"
-            />
+            {isLoadingPdf ? (
+              <div className="flex flex-col items-center space-y-2">
+                <Loader2 size={32} className="animate-spin text-teal-800" />
+                <p className="text-xs font-medium text-gray-600">Memproses PDF...</p>
+              </div>
+            ) : (
+              <>
+                <Upload size={40} className="text-gray-400" />
+                <p className="text-sm text-gray-600 font-medium">
+                  Upload file {activeTab === 'image' ? 'Gambar (JPG/PNG)' : 'Dokumen PDF'}
+                </p>
+                <input 
+                  type="file" 
+                  accept={activeTab === 'image' ? 'image/*' : 'application/pdf'} 
+                  onChange={handleImageUpload}
+                  className="text-xs text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-teal-50 file:text-teal-800 hover:file:bg-teal-100"
+                />
+              </>
+            )}
           </div>
         )}
 
-        {/* TAB SETTINGS (PENGATURAN PRINTER INTERAKTIF & REAL-TIME) */}
+        {/* TAB SETTINGS */}
         {activeTab === 'settings' && (
           <div className="bg-white p-4 rounded-lg border space-y-4 shadow-sm">
-            
-            {/* Opsi Jenis Koneksi */}
             <div>
               <label className="text-xs font-bold text-gray-600 block mb-2">Koneksi Printer</label>
               <div className="flex gap-4 text-sm">
                 <label className="flex items-center gap-1.5 cursor-pointer font-medium">
-                  <input 
-                    type="radio" name="conn" 
-                    checked={printerSettings.connectionType === 'bluetooth'} 
-                    onChange={() => setPrinterSettings({...printerSettings, connectionType: 'bluetooth'})} 
-                    className="accent-teal-800" 
-                  /> 
+                  <input type="radio" name="conn" checked={printerSettings.connectionType === 'bluetooth'} onChange={() => setPrinterSettings({...printerSettings, connectionType: 'bluetooth'})} className="accent-teal-800" /> 
                   <Bluetooth size={16} className="text-blue-600" /> Bluetooth
-                </label>
-
-                <label className="flex items-center gap-1.5 cursor-pointer font-medium">
-                  <input 
-                    type="radio" name="conn" 
-                    checked={printerSettings.connectionType === 'wifi'} 
-                    onChange={() => setPrinterSettings({...printerSettings, connectionType: 'wifi'})} 
-                    className="accent-teal-800" 
-                  /> 
-                  <Wifi size={16} className="text-emerald-600" /> Wifi
-                </label>
-
-                <label className="flex items-center gap-1.5 cursor-pointer font-medium">
-                  <input 
-                    type="radio" name="conn" 
-                    checked={printerSettings.connectionType === 'usb'} 
-                    onChange={() => setPrinterSettings({...printerSettings, connectionType: 'usb'})} 
-                    className="accent-teal-800" 
-                  /> 
-                  <Usb size={16} className="text-amber-600" /> USB
                 </label>
               </div>
             </div>
 
-            {/* Field Printer Tersambung Interaktif */}
             <div>
               <label className="text-xs font-bold text-gray-600 block mb-1">Printer Tersambung</label>
-              
               <div className="flex gap-2">
                 <div 
                   onClick={() => setShowDeviceModal(true)}
-                  className="flex-1 p-2.5 border rounded-lg text-sm bg-gray-50 flex items-center justify-between cursor-pointer hover:bg-gray-100 transition"
+                  className="flex-1 p-2.5 border rounded-lg text-sm bg-gray-50 flex items-center justify-between cursor-pointer hover:bg-gray-100"
                 >
                   <span className={`font-mono font-bold ${printerSettings.printerName === 'Belum Terhubung' ? 'text-gray-400' : 'text-teal-800'}`}>
                     {printerSettings.printerName}
                   </span>
-                  
                   {bluetoothStatus === 'connected' ? (
                     <span className="flex items-center gap-1 text-xs font-bold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
                       <CheckCircle2 size={12} /> Terhubung
@@ -477,75 +476,35 @@ export default function App() {
                     <span className="text-xs text-teal-800 underline font-medium">Pilih/Cari</span>
                   )}
                 </div>
-
-                <button 
-                  onClick={handleScanBluetooth}
-                  disabled={isScanningBluetooth}
-                  className="bg-teal-800 text-white px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1 hover:bg-teal-900 disabled:opacity-50"
-                  title="Pindai Perangkat Bluetooth"
-                >
+                <button onClick={handleScanBluetooth} disabled={isScanningBluetooth} className="bg-teal-800 text-white px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1 hover:bg-teal-900">
                   {isScanningBluetooth ? <Loader2 size={16} className="animate-spin" /> : <Search size={16} />}
                   <span>Scan</span>
                 </button>
               </div>
-
-              {/* Status Peringatan jika belum ada printer */}
-              {printerSettings.printerName === 'Belum Terhubung' && (
-                <p className="text-[11px] text-amber-600 mt-1 flex items-center gap-1">
-                  *Klik tombol 'Scan' atau kotak di atas untuk memilih printer Bluetooth yang aktif.
-                </p>
-              )}
             </div>
 
-            {/* Ukuran Kertas */}
             <div>
               <label className="text-xs font-bold text-gray-600 block mb-2">Ukuran Kertas</label>
               <div className="flex gap-4 text-sm">
                 {['58mm', '80mm', '100mm'].map((size) => (
                   <label key={size} className="flex items-center gap-1.5 cursor-pointer font-medium">
-                    <input 
-                      type="radio" name="paper" 
-                      checked={printerSettings.paperSize === size} 
-                      onChange={() => setPrinterSettings({...printerSettings, paperSize: size})} 
-                      className="accent-teal-800" 
-                    /> {size}
+                    <input type="radio" name="paper" checked={printerSettings.paperSize === size} onChange={() => setPrinterSettings({...printerSettings, paperSize: size})} className="accent-teal-800" /> {size}
                   </label>
                 ))}
               </div>
             </div>
-
-            {/* Custom Width Input */}
-            <div>
-              <label className="text-xs font-bold text-gray-600 block mb-1">Lebar Custom (mm)</label>
-              <input 
-                type="number" 
-                value={printerSettings.customWidthMm} 
-                onChange={(e) => setPrinterSettings({...printerSettings, customWidthMm: Number(e.target.value)})} 
-                className="w-full p-2 border rounded-lg text-sm bg-white focus:ring-2 focus:ring-teal-800 outline-none" 
-                placeholder="0"
-              />
-            </div>
-
           </div>
         )}
 
         {/* TAB PREVIEW CETAK */}
         {activeTab === 'preview' && (
           <div className="space-y-4">
-            
             {activeDisplayCode ? (
               <div className="bg-white p-3 rounded-lg border space-y-2 shadow-sm border-teal-200">
-                <div className="flex items-center justify-between">
-                  <label className="flex items-center gap-2 text-xs font-bold text-teal-800 cursor-pointer">
-                    <input 
-                      type="checkbox" checked={showDetectedBarcode}
-                      onChange={(e) => setShowDetectedBarcode(e.target.checked)}
-                      className="w-4 h-4 accent-teal-800"
-                    />
-                    <span className="flex items-center gap-1"><ScanLine size={14}/> Barcode Terdeteksi: {activeDisplayCode}</span>
-                  </label>
-                </div>
-
+                <label className="flex items-center gap-2 text-xs font-bold text-teal-800 cursor-pointer">
+                  <input type="checkbox" checked={showDetectedBarcode} onChange={(e) => setShowDetectedBarcode(e.target.checked)} className="w-4 h-4 accent-teal-800" />
+                  <span className="flex items-center gap-1"><ScanLine size={14}/> Barcode Terdeteksi: {activeDisplayCode}</span>
+                </label>
                 {showDetectedBarcode && (
                   <div className="flex justify-center p-2 bg-white rounded border">
                     <canvas ref={barcodeCanvasRef} className="max-w-full" />
@@ -554,7 +513,7 @@ export default function App() {
               </div>
             ) : (
               <div className="bg-amber-50 border border-amber-200 p-2.5 rounded-lg text-xs text-amber-800 flex items-center gap-2">
-                <ScanLine size={16} /> Tidak ada barcode terdeteksi pada gambar ini. Kotak barcode disembunyikan.
+                <ScanLine size={16} /> Tidak ada barcode terdeteksi pada file ini. Kotak barcode disembunyikan.
               </div>
             )}
 
@@ -576,29 +535,20 @@ export default function App() {
 
               <div className="flex items-center gap-3">
                 <Moon size={18} className="text-gray-700" />
-                <input 
-                  type="range" min="0" max="100" value={blackSlider}
-                  onChange={(e) => setBlackSlider(Number(e.target.value))}
-                  className="flex-1 accent-teal-800"
-                />
+                <input type="range" min="0" max="100" value={blackSlider} onChange={(e) => setBlackSlider(Number(e.target.value))} className="flex-1 accent-teal-800" />
               </div>
 
               <div className="flex items-center gap-3">
                 <Sun size={18} className="text-yellow-600" />
-                <input 
-                  type="range" min="0" max="100" value={whiteSlider}
-                  onChange={(e) => setWhiteSlider(Number(e.target.value))}
-                  className="flex-1 accent-teal-800"
-                />
+                <input type="range" min="0" max="100" value={whiteSlider} onChange={(e) => setWhiteSlider(Number(e.target.value))} className="flex-1 accent-teal-800" />
               </div>
             </div>
-
           </div>
         )}
 
       </div>
 
-      {/* MODAL PEMINDAI BLUETOOTH / INPUT MANUAL */}
+      {/* MODAL SEARCH BLUETOOTH */}
       {showDeviceModal && (
         <div className="absolute inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-xl w-full max-w-xs p-4 space-y-3 shadow-xl">
@@ -606,50 +556,20 @@ export default function App() {
               <h3 className="font-bold text-sm text-gray-800 flex items-center gap-1.5">
                 <Bluetooth size={18} className="text-blue-600" /> Sambung Bluetooth
               </h3>
-              <button onClick={() => setShowDeviceModal(false)} className="text-gray-400 hover:text-gray-600">
-                <XCircle size={18} />
-              </button>
+              <button onClick={() => setShowDeviceModal(false)} className="text-gray-400 hover:text-gray-600"><XCircle size={18} /></button>
             </div>
 
-            {bluetoothError && (
-              <div className="text-xs bg-red-50 text-red-600 p-2 rounded border border-red-200">
-                {bluetoothError}
-              </div>
-            )}
+            {bluetoothError && <div className="text-xs bg-red-50 text-red-600 p-2 rounded border border-red-200">{bluetoothError}</div>}
 
-            <p className="text-xs text-gray-600">
-              Pastikan Bluetooth HP/Laptop sudah menyala dan printer thermal berada dalam mode siap pairing.
-            </p>
+            <p className="text-xs text-gray-600">Pastikan Bluetooth HP/Laptop sudah menyala dan printer berada dalam mode pairing.</p>
 
-            <button 
-              onClick={handleScanBluetooth}
-              disabled={isScanningBluetooth}
-              className="w-full bg-teal-800 text-white py-2.5 rounded-lg text-xs font-semibold flex items-center justify-center gap-2 hover:bg-teal-900"
-            >
+            <button onClick={handleScanBluetooth} disabled={isScanningBluetooth} className="w-full bg-teal-800 text-white py-2.5 rounded-lg text-xs font-semibold flex items-center justify-center gap-2 hover:bg-teal-900">
               {isScanningBluetooth ? <Loader2 size={16} className="animate-spin" /> : <Search size={16} />}
-              {isScanningBluetooth ? 'Memindai Perangkat...' : 'Mulai Pindai Bluetooth Browser'}
+              {isScanningBluetooth ? 'Memindai...' : 'Pindai Bluetooth Browser'}
             </button>
 
-            <div className="relative flex py-1 items-center">
-              <div className="flex-grow border-t border-gray-200"></div>
-              <span className="flex-shrink mx-2 text-[10px] text-gray-400 uppercase">Atau ketik nama printer</span>
-              <div className="flex-grow border-t border-gray-200"></div>
-            </div>
-
-            {/* Manual input fallback */}
-            <input 
-              type="text"
-              placeholder="Contoh: RPP02N / TWS-58"
-              value={printerSettings.printerName === 'Belum Terhubung' ? '' : printerSettings.printerName}
-              onChange={(e) => setPrinterSettings({...printerSettings, printerName: e.target.value})}
-              className="w-full p-2 border rounded text-xs outline-none focus:ring-1 focus:ring-teal-800"
-            />
-
-            <button 
-              onClick={() => setShowDeviceModal(false)}
-              className="w-full bg-gray-100 text-gray-700 py-2 rounded-lg text-xs font-semibold hover:bg-gray-200"
-            >
-              Simpan & Tutup
+            <button onClick={() => setShowDeviceModal(false)} className="w-full bg-gray-100 text-gray-700 py-2 rounded-lg text-xs font-semibold hover:bg-gray-200">
+              Tutup
             </button>
           </div>
         </div>
@@ -658,43 +578,25 @@ export default function App() {
       {/* FOOTER ACTIONS */}
       {activeTab === 'preview' && (
         <div className="bg-white border-t p-2 flex items-center justify-around">
-          <button onClick={() => setActiveTab('settings')} className="p-2 text-gray-600 hover:bg-gray-100 rounded">
-            <Settings size={20} />
-          </button>
-          <button onClick={() => setRotationAngle((prev) => (prev + 90) % 360)} className="p-2 text-gray-600 hover:bg-gray-100 rounded">
-            <RotateCw size={20} />
-          </button>
+          <button onClick={() => setActiveTab('settings')} className="p-2 text-gray-600 hover:bg-gray-100 rounded"><Settings size={20} /></button>
+          <button onClick={() => setRotationAngle((prev) => (prev + 90) % 360)} className="p-2 text-gray-600 hover:bg-gray-100 rounded"><RotateCw size={20} /></button>
           <button onClick={handlePrint} className="bg-teal-800 text-white px-4 py-2 rounded-lg font-medium text-sm flex items-center gap-2 hover:bg-teal-900">
             <Printer size={18} /> Print
           </button>
           <div className="flex items-center gap-1 text-sm font-semibold text-gray-700">
             <span>×</span>
-            <input 
-              type="number" value={printCopies} 
-              onChange={(e) => setPrintCopies(Math.max(1, Number(e.target.value)))}
-              className="w-10 p-1 border rounded text-center text-xs"
-            />
+            <input type="number" value={printCopies} onChange={(e) => setPrintCopies(Math.max(1, Number(e.target.value)))} className="w-10 p-1 border rounded text-center text-xs" />
           </div>
         </div>
       )}
 
       {/* BOTTOM NAVIGATION */}
       <div className="bg-teal-800 text-white flex justify-around items-center p-2 relative">
-        <button onClick={() => setActiveTab('text')} className={`flex flex-col items-center text-xs ${activeTab === 'text' ? 'text-yellow-400 font-bold' : 'text-gray-300'}`}>
-          <Type size={18} /> Text
-        </button>
-        <button onClick={() => setActiveTab('alamat')} className={`flex flex-col items-center text-xs ${activeTab === 'alamat' ? 'text-yellow-400 font-bold' : 'text-gray-300'}`}>
-          <MapPin size={18} /> Alamat
-        </button>
-        <button onClick={() => setActiveTab('preview')} className="bg-teal-600 p-3 rounded-full border-4 border-gray-100 -mt-6 shadow-lg text-white hover:bg-teal-500 transition">
-          <Printer size={24} />
-        </button>
-        <button onClick={() => setActiveTab('image')} className={`flex flex-col items-center text-xs ${activeTab === 'image' ? 'text-yellow-400 font-bold' : 'text-gray-300'}`}>
-          <ImageIcon size={18} /> Image
-        </button>
-        <button onClick={() => setActiveTab('pdf')} className={`flex flex-col items-center text-xs ${activeTab === 'pdf' ? 'text-yellow-400 font-bold' : 'text-gray-300'}`}>
-          <FileText size={18} /> Pdf
-        </button>
+        <button onClick={() => setActiveTab('text')} className={`flex flex-col items-center text-xs ${activeTab === 'text' ? 'text-yellow-400 font-bold' : 'text-gray-300'}`}><Type size={18} /> Text</button>
+        <button onClick={() => setActiveTab('alamat')} className={`flex flex-col items-center text-xs ${activeTab === 'alamat' ? 'text-yellow-400 font-bold' : 'text-gray-300'}`}><MapPin size={18} /> Alamat</button>
+        <button onClick={() => setActiveTab('preview')} className="bg-teal-600 p-3 rounded-full border-4 border-gray-100 -mt-6 shadow-lg text-white hover:bg-teal-500 transition"><Printer size={24} /></button>
+        <button onClick={() => setActiveTab('image')} className={`flex flex-col items-center text-xs ${activeTab === 'image' ? 'text-yellow-400 font-bold' : 'text-gray-300'}`}><ImageIcon size={18} /> Image</button>
+        <button onClick={() => setActiveTab('pdf')} className={`flex flex-col items-center text-xs ${activeTab === 'pdf' ? 'text-yellow-400 font-bold' : 'text-gray-300'}`}><FileText size={18} /> Pdf</button>
       </div>
 
     </div>
