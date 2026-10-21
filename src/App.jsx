@@ -7,10 +7,7 @@ import {
   Printer, 
   Settings, 
   Upload, 
-  Bluetooth, 
   Search, 
-  CheckCircle2, 
-  XCircle, 
   Loader2,
   Trash2
 } from 'lucide-react';
@@ -29,7 +26,6 @@ export default function App() {
 
   const [isScanningBluetooth, setIsScanningBluetooth] = useState(false);
   const [bluetoothStatus, setBluetoothStatus] = useState('disconnected');
-  const [showDeviceModal, setShowDeviceModal] = useState(false);
   const [bluetoothError, setBluetoothError] = useState(null);
 
   // STATE TEKS BEBAS
@@ -47,6 +43,7 @@ export default function App() {
   // STATE PREVIEW IMAGE & PDF
   const [previewImageSrc, setPreviewImageSrc] = useState(null);
   const [pdfFileName, setPdfFileName] = useState('');
+  const [isLoadingPdf, setIsLoadingPdf] = useState(false);
   const previewCanvasRef = useRef(null);
 
   const [isPrinting, setIsPrinting] = useState(false);
@@ -54,6 +51,18 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('thermal_printer_settings', JSON.stringify(printerSettings));
   }, [printerSettings]);
+
+  // LOAD PDF.JS LIBRARY SECARA DINAMIS VIA CDN
+  useEffect(() => {
+    if (!window.pdfjsLib) {
+      const script = document.createElement('script');
+      script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+      script.onload = () => {
+        window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+      };
+      document.head.appendChild(script);
+    }
+  }, []);
 
   // FITUR PAIRING BLUETOOTH
   const handleScanBluetooth = async () => {
@@ -79,7 +88,6 @@ export default function App() {
           printerId: device.id
         });
         setBluetoothStatus('connected');
-        setShowDeviceModal(false);
       }
     } catch (err) {
       if (err.name !== 'NotFoundError') {
@@ -134,7 +142,7 @@ export default function App() {
     try {
       setIsPrinting(true);
       const sourceCanvas = canvasElement;
-      const TARGET_WIDTH = 384; // Lebar pas RPP02N (58mm)
+      const TARGET_WIDTH = 384; // Lebar RPP02N (58mm)
       const scale = TARGET_WIDTH / sourceCanvas.width;
       const targetHeight = Math.round(sourceCanvas.height * scale);
 
@@ -231,30 +239,50 @@ export default function App() {
     reader.readAsDataURL(file);
   };
 
-  // HANDLER UPLOAD PDF (SIMPLE CANVAS RENDERER)
+  // HANDLER UPLOAD PDF DENGAN RENDERER ASLI (PDF.JS)
   const handlePdfUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
-    setPdfFileName(file.name);
 
-    // Render PDF menggunakan FileReader / Image placeholder atau library bawaan browser
-    const reader = new FileReader();
-    reader.onload = async function() {
-      // Untuk demo preview PDF, kita konversi halaman awal ke canvas
+    if (!window.pdfjsLib) {
+      alert('Library PDF sedang dimuat, silakan coba beberapa detik lagi...');
+      return;
+    }
+
+    setPdfFileName(file.name);
+    setIsLoadingPdf(true);
+
+    try {
+      const fileArrayBuffer = await file.arrayBuffer();
+      const pdf = await window.pdfjsLib.getDocument({ data: fileArrayBuffer }).promise;
+      const page = await pdf.getPage(1); // Ambil Halaman 1 Resi
+
+      const viewport = page.getViewport({ scale: 1.5 });
       const canvas = previewCanvasRef.current;
       if (!canvas) return;
+
+      const scale = 384 / viewport.width;
+      const scaledViewport = page.getViewport({ scale: scale * 1.5 });
+
       canvas.width = 384;
-      canvas.height = 550; // Standar tinggi label resi thermal
+      canvas.height = Math.round(scaledViewport.height);
+
       const ctx = canvas.getContext('2d');
       ctx.fillStyle = '#FFFFFF';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
-      ctx.fillStyle = '#000000';
-      ctx.font = '14px sans-serif';
-      ctx.fillText("PDF: " + file.name, 20, 40);
-      ctx.fillText("Silakan klik cetak untuk memproses", 20, 70);
+
+      const renderContext = {
+        canvasContext: ctx,
+        viewport: scaledViewport
+      };
+
+      await page.render(renderContext).promise;
       setPreviewImageSrc(canvas.toDataURL());
-    };
-    reader.readAsDataURL(file);
+    } catch (err) {
+      alert(`Gagal merender PDF: ${err.message}`);
+    } finally {
+      setIsLoadingPdf(false);
+    }
   };
 
   // 1. CETAK TEKS BEBAS
@@ -421,10 +449,15 @@ export default function App() {
           </div>
         )}
 
-        {/* TAB 3 & 4: IMAGE & PDF DENGAN HALAMAN PREVIEW */}
+        {/* TAB 3 & 4: IMAGE & PDF DENGAN PREVIEW NYATA */}
         {(activeTab === 'image' || activeTab === 'pdf') && (
           <div className="space-y-4">
-            {!previewImageSrc ? (
+            {isLoadingPdf ? (
+              <div className="flex flex-col items-center justify-center p-8 bg-white rounded-lg border space-y-2">
+                <Loader2 size={32} className="animate-spin text-teal-800" />
+                <p className="text-xs font-medium text-gray-600">Membaca & Merender Dokumen PDF Resi...</p>
+              </div>
+            ) : !previewImageSrc ? (
               <div className="flex flex-col items-center justify-center p-8 border-2 border-dashed border-gray-300 rounded-lg bg-white space-y-3">
                 <Upload size={40} className="text-gray-400" />
                 <p className="text-sm text-gray-600 font-medium text-center">
@@ -441,22 +474,21 @@ export default function App() {
               <div className="space-y-3">
                 <div className="flex items-center justify-between bg-white p-2 px-3 rounded-lg border">
                   <span className="text-xs font-semibold text-gray-700 truncate max-w-[200px]">
-                    {pdfFileName || 'Preview Gambar'}
+                    {pdfFileName || 'Preview Gambar Resi'}
                   </span>
                   <button 
-                    onClick={() => setPreviewImageSrc(null)} 
+                    onClick={() => { setPreviewImageSrc(null); setPdfFileName(''); }} 
                     className="text-red-600 hover:text-red-800 text-xs flex items-center gap-1 font-medium"
                   >
                     <Trash2 size={14} /> Ganti File
                   </button>
                 </div>
 
-                {/* KOTAK PREVIEW */}
-                <div className="border bg-white rounded-lg p-3 flex justify-center shadow-inner overflow-y-auto max-h-[350px]">
-                  <img src={previewImageSrc} alt="Preview Resi" className="max-w-full border shadow-sm" />
+                {/* KOTAK PREVIEW HASIL RENDER PDF ASLI */}
+                <div className="border bg-white rounded-lg p-3 flex justify-center shadow-inner overflow-y-auto max-h-[380px]">
+                  <img src={previewImageSrc} alt="Preview Resi Asli" className="max-w-full border shadow-sm" />
                 </div>
 
-                {/* TOMBOL CETAK DOKUMEN/GAMBAR */}
                 <button 
                   onClick={handlePrintDocument}
                   disabled={isPrinting}
@@ -468,7 +500,7 @@ export default function App() {
               </div>
             )}
             
-            {/* Canvas Tersembunyi untuk Proses Pixel Data */}
+            {/* Canvas Tersembunyi tempat PDF.js menggambar */}
             <canvas ref={previewCanvasRef} style={{ display: 'none' }}></canvas>
           </div>
         )}
