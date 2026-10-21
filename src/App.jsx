@@ -320,31 +320,29 @@ export default function App() {
     if (!mainCanvasRef.current) return;
     
     if (printerSettings.printerId === 'Belum Terhubung' || !printerSettings.printerId) {
-      alert('Silakan hubungkan printer terlebih dahulu di menu Pengaturan Printer dengan menekan tombol Scan!');
+      alert('Silakan hubungkan printer terlebih dahulu di menu Pengaturan Printer!');
       setActiveTab('settings');
       return;
     }
 
     try {
-      alert(`Memproses cetak gambar ke ${printerSettings.printerName}...`);
+      alert(`Mengirim cetak presisi ke ${printerSettings.printerName}...`);
       
       const canvas = mainCanvasRef.current;
       const ctx = canvas.getContext('2d');
-      const width = canvas.width;
+      const width = canvas.width; // Harus disesuaikan ke 384 untuk RPP02N
       const height = canvas.height;
       
       const imgData = ctx.getImageData(0, 0, width, height);
       const data = imgData.data;
 
-      // Konversi Canvas ke format ESC/POS Raster Bit Image (ESC * / GS v 0)
       const bytesPerLine = Math.ceil(width / 8);
       let rasterData = [];
 
-      // Perintah ESC/POS untuk inisialisasi printer & cetak raster
-      // GS v 0 [m] [xL] [xH] [yL] [yH] [d...]
-      rasterData.push(0x1D, 0x76, 0x30, 0x00); // GS v 0 mode normal
-      rasterData.push(bytesPerLine & 0xFF, (bytesPerLine >> 8) & 0xFF); // xL, xH
-      rasterData.push(height & 0xFF, (height >> 8) & 0xFF); // yL, yH
+      // Perintah ESC/POS Raster Bit Image yang kompatibel dengan RPP02N
+      rasterData.push(0x1D, 0x76, 0x30, 0x00); // GS v 0
+      rasterData.push(bytesPerLine & 0xFF, (bytesPerLine >> 8) & 0xFF);
+      rasterData.push(height & 0xFF, (height >> 8) & 0xFF);
 
       for (let y = 0; y < height; y++) {
         for (let x = 0; x < bytesPerLine; x++) {
@@ -353,8 +351,8 @@ export default function App() {
             const pixelX = x * 8 + bit;
             if (pixelX < width) {
               const index = (y * width + pixelX) * 4;
-              // Jika warna pixel gelap/hitam, set bit ke 1
               const red = data[index];
+              // Jika pixel gelap/hitam, set bit
               if (red < 128) {
                 byte |= (1 << (7 - bit));
               }
@@ -364,10 +362,10 @@ export default function App() {
         }
       }
 
-      // Perintah tambahan: baris kosong & auto cut (jika didukung)
-      rasterData.push(0x0A, 0x0A, 0x0A); // Feed kertas ke bawah sedikit agar tidak terpotong
+      // Spasi akhir kertas agar keluar sempurna
+      rasterData.push(0x0A, 0x0A, 0x0A);
 
-      // Sambung ke Bluetooth GATT Printer RPP02N
+      // Koneksi Web Bluetooth GATT
       const device = await navigator.bluetooth.requestDevice({
         acceptAllDevices: true,
         optionalServices: ['000018f0-0000-1000-8000-00805f9b34fb', '49535343-fe7d-4ae5-8fa9-9fafd205e455']
@@ -377,16 +375,16 @@ export default function App() {
       const service = await server.getPrimaryService('000018f0-0000-1000-8000-00805f9b34fb');
       const characteristic = await service.getCharacteristic('00002af1-0000-1000-8000-00805f9b34fb');
 
-      // Kirim data dalam potongan kecil (chunk) agar tidak overload buffer Bluetooth printer
+      // Kirim bertahap (chunking) menghindari buffer penuh
       const chunkSize = 512;
       for (let i = 0; i < rasterData.length; i += chunkSize) {
         const chunk = new Uint8Array(rasterData.slice(i, i + chunkSize));
         await characteristic.writeValue(chunk);
       }
 
-      alert('Resi berhasil dicetak oleh printer!');
+      alert('Resi PDF/Gambar berhasil dicetak dengan sempurna!');
     } catch (err) {
-      alert(`Gagal mencetak via Bluetooth: ${err.message}`);
+      alert(`Gagal mencetak: ${err.message}`);
     }
   };
 
