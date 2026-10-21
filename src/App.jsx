@@ -316,75 +316,46 @@ export default function App() {
   };
 
   // FUNGSI CETAK GAMBAR / RESI KE PRINTER THERMAL VIA BLUETOOTH
-  const handlePrint = async () => {
+  const handlePrint = () => {
     if (!mainCanvasRef.current) return;
-    
-    if (printerSettings.printerId === 'Belum Terhubung' || !printerSettings.printerId) {
-      alert('Silakan hubungkan printer terlebih dahulu di menu Pengaturan Printer!');
-      setActiveTab('settings');
-      return;
-    }
+    const canvas = mainCanvasRef.current;
+    const dataUrl = canvas.toDataURL('image/png');
 
-    try {
-      alert(`Mengirim cetak presisi ke ${printerSettings.printerName}...`);
-      
-      const canvas = mainCanvasRef.current;
-      const ctx = canvas.getContext('2d');
-      const width = canvas.width; // Harus disesuaikan ke 384 untuk RPP02N
-      const height = canvas.height;
-      
-      const imgData = ctx.getImageData(0, 0, width, height);
-      const data = imgData.data;
-
-      const bytesPerLine = Math.ceil(width / 8);
-      let rasterData = [];
-
-      // Perintah ESC/POS Raster Bit Image yang kompatibel dengan RPP02N
-      rasterData.push(0x1D, 0x76, 0x30, 0x00); // GS v 0
-      rasterData.push(bytesPerLine & 0xFF, (bytesPerLine >> 8) & 0xFF);
-      rasterData.push(height & 0xFF, (height >> 8) & 0xFF);
-
-      for (let y = 0; y < height; y++) {
-        for (let x = 0; x < bytesPerLine; x++) {
-          let byte = 0;
-          for (let bit = 0; bit < 8; bit++) {
-            const pixelX = x * 8 + bit;
-            if (pixelX < width) {
-              const index = (y * width + pixelX) * 4;
-              const red = data[index];
-              // Jika pixel gelap/hitam, set bit
-              if (red < 128) {
-                byte |= (1 << (7 - bit));
+    // Buka jendela cetak tersembunyi yang di-setting khusus untuk thermal 58mm/80mm
+    const win = window.open('', '_blank', 'width=400,height=600');
+    if (win) {
+      win.document.write(`
+        <html>
+          <head>
+            <title>Cetak Resi Thermal</title>
+            <style>
+              @page {
+                size: 58mm auto;
+                margin: 0;
               }
-            }
-          }
-          rasterData.push(byte);
-        }
-      }
-
-      // Spasi akhir kertas agar keluar sempurna
-      rasterData.push(0x0A, 0x0A, 0x0A);
-
-      // Koneksi Web Bluetooth GATT
-      const device = await navigator.bluetooth.requestDevice({
-        acceptAllDevices: true,
-        optionalServices: ['000018f0-0000-1000-8000-00805f9b34fb', '49535343-fe7d-4ae5-8fa9-9fafd205e455']
-      });
-
-      const server = await device.gatt.connect();
-      const service = await server.getPrimaryService('000018f0-0000-1000-8000-00805f9b34fb');
-      const characteristic = await service.getCharacteristic('00002af1-0000-1000-8000-00805f9b34fb');
-
-      // Kirim bertahap (chunking) menghindari buffer penuh
-      const chunkSize = 512;
-      for (let i = 0; i < rasterData.length; i += chunkSize) {
-        const chunk = new Uint8Array(rasterData.slice(i, i + chunkSize));
-        await characteristic.writeValue(chunk);
-      }
-
-      alert('Resi PDF/Gambar berhasil dicetak dengan sempurna!');
-    } catch (err) {
-      alert(`Gagal mencetak: ${err.message}`);
+              body {
+                margin: 0;
+                padding: 0;
+                display: flex;
+                justify-content: center;
+                background-color: #ffffff;
+              }
+              img {
+                width: 100%;
+                max-width: 58mm;
+                height: auto;
+                display: block;
+              }
+            </style>
+          </head>
+          <body>
+            <img src="${dataUrl}" onload="window.focus(); window.print(); window.close();" />
+          </body>
+        </html>
+      `);
+      win.document.close();
+    } else {
+      alert('Mohon izinkan pop-up pada browser Anda untuk melakukan pencetakan.');
     }
   };
 
