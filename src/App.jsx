@@ -317,51 +317,78 @@ export default function App() {
 
   // LOGIKA CETAK AMAN TANPA RAWBT DIPAKSA
   // FUNGSI CETAK LANGSUNG VIA WEB BLUETOOTH
+  // FUNGSI CETAK GAMBAR / RESI KE PRINTER THERMAL VIA BLUETOOTH
   const handlePrint = async () => {
     if (!mainCanvasRef.current) return;
     
-    // Periksa apakah printer sudah dihubungkan via Web Bluetooth di tab Settings
     if (printerSettings.printerId === 'Belum Terhubung' || !printerSettings.printerId) {
-      alert('Silakan hubungkan printer terlebih dahulu di menu Pengaturan Printer (ikon gear) dengan menekan tombol Scan!');
+      alert('Silakan hubungkan printer terlebih dahulu di menu Pengaturan Printer dengan menekan tombol Scan!');
       setActiveTab('settings');
       return;
     }
 
     try {
-      alert(`Mengirim data cetak ke ${printerSettings.printerName}... Pastikan printer menyala.`);
+      alert(`Memproses cetak gambar ke ${printerSettings.printerName}...`);
       
-      // Jika menggunakan Web Bluetooth API langsung
+      const canvas = mainCanvasRef.current;
+      const ctx = canvas.getContext('2d');
+      const width = canvas.width;
+      const height = canvas.height;
+      
+      const imgData = ctx.getImageData(0, 0, width, height);
+      const data = imgData.data;
+
+      // Konversi Canvas ke format ESC/POS Raster Bit Image (ESC * / GS v 0)
+      const bytesPerLine = Math.ceil(width / 8);
+      let rasterData = [];
+
+      // Perintah ESC/POS untuk inisialisasi printer & cetak raster
+      // GS v 0 [m] [xL] [xH] [yL] [yH] [d...]
+      rasterData.push(0x1D, 0x76, 0x30, 0x00); // GS v 0 mode normal
+      rasterData.push(bytesPerLine & 0xFF, (bytesPerLine >> 8) & 0xFF); // xL, xH
+      rasterData.push(height & 0xFF, (height >> 8) & 0xFF); // yL, yH
+
+      for (let y = 0; y < height; y++) {
+        for (let x = 0; x < bytesPerLine; x++) {
+          let byte = 0;
+          for (let bit = 0; bit < 8; bit++) {
+            const pixelX = x * 8 + bit;
+            if (pixelX < width) {
+              const index = (y * width + pixelX) * 4;
+              // Jika warna pixel gelap/hitam, set bit ke 1
+              const red = data[index];
+              if (red < 128) {
+                byte |= (1 << (7 - bit));
+              }
+            }
+          }
+          rasterData.push(byte);
+        }
+      }
+
+      // Perintah tambahan: baris kosong & auto cut (jika didukung)
+      rasterData.push(0x0A, 0x0A, 0x0A); // Feed kertas ke bawah sedikit agar tidak terpotong
+
+      // Sambung ke Bluetooth GATT Printer RPP02N
       const device = await navigator.bluetooth.requestDevice({
         acceptAllDevices: true,
         optionalServices: ['000018f0-0000-1000-8000-00805f9b34fb', '49535343-fe7d-4ae5-8fa9-9fafd205e455']
       });
 
       const server = await device.gatt.connect();
-      // Mengambil service umum printer thermal ESC/POS
       const service = await server.getPrimaryService('000018f0-0000-1000-8000-00805f9b34fb');
       const characteristic = await service.getCharacteristic('00002af1-0000-1000-8000-00805f9b34fb');
 
-      // Kirim perintah cetak sederhana atau info sukses terhubung
-      const encoder = new TextEncoder();
-      const printCommand = encoder.encode('\n--- RESI KELUARGA ---\nCetak Berhasil!\n\n\n');
-      await characteristic.writeValue(printCommand);
-
-      alert('Perintah cetak berhasil dikirim ke printer!');
-    } catch (err) {
-      // Fallback jika browser membatasi web bluetooth gatt write langsung, 
-      // gunakan window.print standar atau arahkan kembali ke preview gambar bersih
-      const canvas = mainCanvasRef.current;
-      const dataUrl = canvas.toDataURL('image/png');
-      const win = window.open('');
-      if (win) {
-        win.document.write(`
-          <html>
-            <body style="margin:0; text-align:center;">
-              <img src="${dataUrl}" style="width:100%;" onload="window.print();window.close();"/>
-            </body>
-          </html>
-        `);
+      // Kirim data dalam potongan kecil (chunk) agar tidak overload buffer Bluetooth printer
+      const chunkSize = 512;
+      for (let i = 0; i < rasterData.length; i += chunkSize) {
+        const chunk = new Uint8Array(rasterData.slice(i, i + chunkSize));
+        await characteristic.writeValue(chunk);
       }
+
+      alert('Resi berhasil dicetak oleh printer!');
+    } catch (err) {
+      alert(`Gagal mencetak via Bluetooth: ${err.message}`);
     }
   };
 
