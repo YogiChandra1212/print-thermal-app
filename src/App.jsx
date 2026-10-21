@@ -316,46 +316,85 @@ export default function App() {
   };
 
   // FUNGSI CETAK GAMBAR / RESI KE PRINTER THERMAL VIA BLUETOOTH
-  const handlePrint = () => {
+  // FUNGSI CETAK MURNI WEB BLUETOOTH (ESC/POS BIT-IMAGE UNTUK RPP02N)
+  // FUNGSI CETAK PRESISI RPP02N (FIX 384 DOTS / 48 BYTES PER BARIS)
+  const handlePrint = async () => {
     if (!mainCanvasRef.current) return;
-    const canvas = mainCanvasRef.current;
-    const dataUrl = canvas.toDataURL('image/png');
 
-    // Buka jendela cetak tersembunyi yang di-setting khusus untuk thermal 58mm/80mm
-    const win = window.open('', '_blank', 'width=400,height=600');
-    if (win) {
-      win.document.write(`
-        <html>
-          <head>
-            <title>Cetak Resi Thermal</title>
-            <style>
-              @page {
-                size: 58mm auto;
-                margin: 0;
-              }
-              body {
-                margin: 0;
-                padding: 0;
-                display: flex;
-                justify-content: center;
-                background-color: #ffffff;
-              }
-              img {
-                width: 100%;
-                max-width: 58mm;
-                height: auto;
-                display: block;
-              }
-            </style>
-          </head>
-          <body>
-            <img src="${dataUrl}" onload="window.focus(); window.print(); window.close();" />
-          </body>
-        </html>
-      `);
-      win.document.close();
-    } else {
-      alert('Mohon izinkan pop-up pada browser Anda untuk melakukan pencetakan.');
+    try {
+      const sourceCanvas = mainCanvasRef.current;
+      
+      // 1. Buat Offscreen Canvas khusus berukuran tepat 384 piksel (Lebar Fisik RPP02N)
+      const TARGET_WIDTH = 384;
+      const scaleFactor = TARGET_WIDTH / sourceCanvas.width;
+      const targetHeight = Math.round(sourceCanvas.height * scaleFactor);
+
+      const printCanvas = document.createElement('canvas');
+      printCanvas.width = TARGET_WIDTH;
+      printCanvas.height = targetHeight;
+      const pCtx = printCanvas.getContext('2d');
+
+      // Gambar ulang dari canvas utama ke canvas 384px
+      pCtx.fillStyle = '#FFFFFF';
+      pCtx.fillRect(0, 0, TARGET_WIDTH, targetHeight);
+      pCtx.drawImage(sourceCanvas, 0, 0, TARGET_WIDTH, targetHeight);
+
+      // Ambil piksel yang sudah pas 384px
+      const imgData = pCtx.getImageData(0, 0, TARGET_WIDTH, targetHeight).data;
+
+      // 2. Minta Akses Web Bluetooth HP
+      const device = await navigator.bluetooth.requestDevice({
+        acceptAllDevices: true,
+        optionalServices: ['000018f0-0000-1000-8000-00805f9b34fb', '49535343-fe7d-4ae5-8fa9-9fafd205e455']
+      });
+
+      const server = await device.gatt.connect();
+      const service = await server.getPrimaryService('000018f0-0000-1000-8000-00805f9b34fb');
+      const characteristic = await service.getCharacteristic('00002af1-0000-1000-8000-00805f9b34fb');
+
+      // 3. Konversi Piksel ke Perintah Raster ESC/POS (GS v 0)
+      const bytesPerLine = TARGET_WIDTH / 8; // Tepat 48 Byte!
+      let command = [];
+
+      // Reset printer ESC @
+      command.push(0x1B, 0x40);
+
+      // Perintah GS v 0 (Raster Mode)
+      command.push(0x1D, 0x76, 0x30, 0x00);
+      command.push(bytesPerLine & 0xFF, (bytesPerLine >> 8) & 0xFF); // xL, xH = 48, 0
+      command.push(targetHeight & 0xFF, (targetHeight >> 8) & 0xFF); // yL, yH
+
+      for (let y = 0; y < targetHeight; y++) {
+        for (let x = 0; x < bytesPerLine; x++) {
+          let byte = 0;
+          for (let bit = 0; bit < 8; bit++) {
+            const pixelX = x * 8 + bit;
+            const idx = (y * TARGET_WIDTH + pixelX) * 4;
+            const r = imgData[idx];
+            
+            // Jika warna piksel hitam (di bawah threshold)
+            if (r < 128) {
+              byte |= (0x80 >> bit);
+            }
+          }
+          command.push(byte);
+        }
+      }
+
+      // Spasi Kertas Akhir (Feed 4 baris)
+      command.push(0x1B, 0x64, 0x04);
+
+      // 4. Kirim Data dengan Chunking 128 Byte & Delay 15ms (Penting untuk RPP02N!)
+      const chunkSize = 128;
+      for (let i = 0; i < command.length; i += chunkSize) {
+        const chunk = new Uint8Array(command.slice(i, i + chunkSize));
+        await characteristic.writeValue(chunk);
+        await new Promise(resolve => setTimeout(resolve, 15));
+      }
+
+      alert('Berhasil! Gambar/PDF resi tercetak rapi.');
+    } catch (err) {
+      alert(`Gagal mencetak: ${err.message}`);
     }
   };
 
