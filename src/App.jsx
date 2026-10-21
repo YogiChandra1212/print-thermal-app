@@ -118,6 +118,96 @@ export default function App() {
     }
   };
 
+  // Tambahkan library pembaca PDF jika belum ada (bisa pakai pdfjs-dist via CDN atau npm)
+// Pastikan canvas merender dengan lebar persis 384px untuk RPP02N
+
+  const handlePrintDocument = async (canvasElement) => {
+    if (!canvasElement) return;
+
+    try {
+      setIsPrinting(true);
+      const sourceCanvas = canvasElement;
+      const TARGET_WIDTH = 384; // Lebar pas RPP02N (58mm)
+      const scale = TARGET_WIDTH / sourceCanvas.width;
+      const targetHeight = Math.round(sourceCanvas.height * scale);
+
+      // Buat canvas penyesuaian resolusi
+      const printCanvas = document.createElement('canvas');
+      printCanvas.width = TARGET_WIDTH;
+      printCanvas.height = targetHeight;
+      const pCtx = printCanvas.getContext('2d');
+
+      pCtx.fillStyle = '#FFFFFF';
+      pCtx.fillRect(0, 0, TARGET_WIDTH, targetHeight);
+      pCtx.drawImage(sourceCanvas, 0, 0, TARGET_WIDTH, targetHeight);
+
+      const imgData = pCtx.getImageData(0, 0, TARGET_WIDTH, targetHeight).data;
+
+      // Koneksi Web Bluetooth
+      const device = await navigator.bluetooth.requestDevice({
+        acceptAllDevices: true,
+        optionalServices: ['000018f0-0000-1000-8000-00805f9b34fb', '49535343-fe7d-4ae5-8fa9-9fafd205e455']
+      });
+
+      const server = await device.gatt.connect();
+      const service = await server.getPrimaryService('000018f0-0000-1000-8000-00805f9b34fb');
+      const characteristic = await service.getCharacteristic('00002af1-0000-1000-8000-00805f9b34fb');
+
+      // Reset printer
+      await characteristic.writeValue(new Uint8Array([0x1B, 0x40]));
+
+      // KIRIM PER BARIS / BLOK KECIL (VERTICAL CHUNKING) AGAR TIDAK OVERFLOW
+      const bytesPerLine = TARGET_WIDTH / 8; // 48 bytes
+      const blockHeight = 24; // Cetak per 24 baris piksel sekali kirim
+
+      for (let y = 0; y < targetHeight; y += blockHeight) {
+        let blockData = [];
+        let currentBlockHeight = Math.min(blockHeight, targetHeight - y);
+
+        // Header ESC/POS Raster untuk blok ini
+        blockData.push(0x1D, 0x76, 0x30, 0x00);
+        blockData.push(bytesPerLine & 0xFF, (bytesPerLine >> 8) & 0xFF);
+        blockData.push(currentBlockHeight & 0xFF, (currentBlockHeight >> 8) & 0xFF);
+
+        for (let py = 0; py < currentBlockHeight; py++) {
+          for (let x = 0; x < bytesPerLine; x++) {
+            let byte = 0;
+            for (let bit = 0; bit < 8; bit++) {
+              let pixelX = x * 8 + bit;
+              let idx = ((y + py) * TARGET_WIDTH + pixelX) * 4;
+              let r = imgData[idx];
+              let g = imgData[idx + 1];
+              let b = imgData[idx + 2];
+              
+              // Ubah ke grayscale & threshold hitam-putih tajam untuk barcode/logo
+              let avg = (r + g + b) / 3;
+              if (avg < 140) { // Threshold kontras tinggi agar barcode J&T & logo Blibli tidak pecah
+                byte |= (0x80 >> bit);
+              }
+            }
+            blockData.push(byte);
+          }
+        }
+
+        // Kirim blok dengan aman via Bluetooth dengan jeda kecil
+        const chunkSize = 128;
+        for (let i = 0; i < blockData.length; i += chunkSize) {
+          const chunk = new Uint8Array(blockData.slice(i, i + chunkSize));
+          await characteristic.writeValue(chunk);
+        }
+        await new Promise(r => setTimeout(r, 25)); // Jeda agar buffer printer bernapas
+      }
+
+      // Feed kertas di akhir
+      await characteristic.writeValue(new Uint8Array([0x1B, 0x64, 0x04]));
+      alert('Label resi berhasil dicetak utuh sebagai gambar!');
+    } catch (err) {
+      alert(`Gagal mencetak resi: ${err.message}`);
+    } finally {
+      setIsPrinting(false);
+    }
+  };
+
   // 1. CETAK TEKS BEBAS LANGSUNG (DIRECT ESC/POS)
   const handlePrintFreeText = () => {
     if (!freeText.trim()) {
