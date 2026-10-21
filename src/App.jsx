@@ -315,8 +315,6 @@ export default function App() {
     setRotationAngle(0);
   };
 
-  // LOGIKA CETAK AMAN TANPA RAWBT DIPAKSA
-  // FUNGSI CETAK LANGSUNG VIA WEB BLUETOOTH
   // FUNGSI CETAK GAMBAR / RESI KE PRINTER THERMAL VIA BLUETOOTH
   const handlePrint = async () => {
     if (!mainCanvasRef.current) return;
