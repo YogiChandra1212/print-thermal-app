@@ -15,12 +15,13 @@ import {
 export default function App() {
   const [activeTab, setActiveTab] = useState('text');
   
-  // STATE SETTING PRINTER
+  // STATE SETTING PRINTER & UKURAN KERTAS
   const [printerSettings, setPrinterSettings] = useState(() => {
     const saved = localStorage.getItem('thermal_printer_settings');
     return saved ? JSON.parse(saved) : {
       printerName: 'Belum Terhubung',
-      printerId: null
+      printerId: null,
+      paperSize: '58' // Pilihan default: '58' (58mm/50mm), '80' (80mm), '100' (100mm)
     };
   });
 
@@ -64,6 +65,14 @@ export default function App() {
     }
   }, []);
 
+  // HELPER UNTUK MENDAPATKAN TARGET WIDTH (DOTS) BERDASARKAN SETTING KERTAS
+  const getTargetWidth = () => {
+    const size = printerSettings.paperSize || '58';
+    if (size === '80') return 576;  // 80mm
+    if (size === '100') return 800; // 100mm
+    return 384;                     // 58mm / 50mm
+  };
+
   // FITUR PAIRING BLUETOOTH
   const handleScanBluetooth = async () => {
     setBluetoothError(null);
@@ -83,10 +92,11 @@ export default function App() {
 
       if (device) {
         setBluetoothStatus('connecting');
-        setPrinterSettings({
+        setPrinterSettings(prev => ({
+          ...prev,
           printerName: device.name || `Printer (${device.id.slice(0, 8)})`,
           printerId: device.id
-        });
+        }));
         setBluetoothStatus('connected');
       }
     } catch (err) {
@@ -131,7 +141,7 @@ export default function App() {
     }
   };
 
-  // FUNGSI CETAK DOKUMEN / GAMBAR DENGAN VERTICAL CHUNKING (ANTI GARIS PUTUS)
+  // FUNGSI CETAK DOKUMEN / GAMBAR (DINAMIS SESUAI LEBAR KERTAS DI SETTING)
   const handlePrintDocument = async () => {
     const canvasElement = previewCanvasRef.current;
     if (!canvasElement) {
@@ -142,7 +152,7 @@ export default function App() {
     try {
       setIsPrinting(true);
       const sourceCanvas = canvasElement;
-      const TARGET_WIDTH = 384; // Lebar RPP02N (58mm)
+      const TARGET_WIDTH = getTargetWidth(); // Dinamis 384, 576, atau 800 dots
       const scale = TARGET_WIDTH / sourceCanvas.width;
       const targetHeight = Math.round(sourceCanvas.height * scale);
 
@@ -168,8 +178,8 @@ export default function App() {
 
       await characteristic.writeValue(new Uint8Array([0x1B, 0x40])); // Reset printer
 
-      const bytesPerLine = TARGET_WIDTH / 8; // 48 bytes
-      const blockHeight = 24; // Chunking per 24 baris agar buffer printer aman
+      const bytesPerLine = Math.ceil(TARGET_WIDTH / 8);
+      const blockHeight = 24;
 
       for (let y = 0; y < targetHeight; y += blockHeight) {
         let blockData = [];
@@ -190,7 +200,7 @@ export default function App() {
               let b = imgData[idx + 2];
               
               let avg = (r + g + b) / 3;
-              if (avg < 140) { // Threshold kontras tinggi untuk logo & barcode
+              if (avg < 140) {
                 byte |= (0x80 >> bit);
               }
             }
@@ -206,7 +216,7 @@ export default function App() {
         await new Promise(r => setTimeout(r, 25));
       }
 
-      await characteristic.writeValue(new Uint8Array([0x1B, 0x64, 0x04])); // Feed kertas
+      await characteristic.writeValue(new Uint8Array([0x1B, 0x64, 0x04])); // Feed
       alert('Label resi berhasil dicetak utuh!');
     } catch (err) {
       alert(`Gagal mencetak resi: ${err.message}`);
@@ -224,10 +234,11 @@ export default function App() {
     reader.onload = (event) => {
       const img = new Image();
       img.onload = () => {
+        const targetW = getTargetWidth();
         const canvas = previewCanvasRef.current;
         if (!canvas) return;
-        canvas.width = 384;
-        canvas.height = Math.round((img.height / img.width) * 384);
+        canvas.width = targetW;
+        canvas.height = Math.round((img.height / img.width) * targetW);
         const ctx = canvas.getContext('2d');
         ctx.fillStyle = '#FFFFFF';
         ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -239,7 +250,7 @@ export default function App() {
     reader.readAsDataURL(file);
   };
 
-  // HANDLER UPLOAD PDF DENGAN RENDERER ASLI (PDF.JS)
+  // HANDLER UPLOAD PDF
   const handlePdfUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -255,16 +266,17 @@ export default function App() {
     try {
       const fileArrayBuffer = await file.arrayBuffer();
       const pdf = await window.pdfjsLib.getDocument({ data: fileArrayBuffer }).promise;
-      const page = await pdf.getPage(1); // Ambil Halaman 1 Resi
+      const page = await pdf.getPage(1);
 
+      const targetW = getTargetWidth();
       const viewport = page.getViewport({ scale: 1.5 });
       const canvas = previewCanvasRef.current;
       if (!canvas) return;
 
-      const scale = 384 / viewport.width;
+      const scale = targetW / viewport.width;
       const scaledViewport = page.getViewport({ scale: scale * 1.5 });
 
-      canvas.width = 384;
+      canvas.width = targetW;
       canvas.height = Math.round(scaledViewport.height);
 
       const ctx = canvas.getContext('2d');
@@ -449,7 +461,7 @@ export default function App() {
           </div>
         )}
 
-        {/* TAB 3 & 4: IMAGE & PDF DENGAN PREVIEW NYATA */}
+        {/* TAB 3 & 4: IMAGE & PDF */}
         {(activeTab === 'image' || activeTab === 'pdf') && (
           <div className="space-y-4">
             {isLoadingPdf ? (
@@ -484,7 +496,6 @@ export default function App() {
                   </button>
                 </div>
 
-                {/* KOTAK PREVIEW HASIL RENDER PDF ASLI */}
                 <div className="border bg-white rounded-lg p-3 flex justify-center shadow-inner overflow-y-auto max-h-[380px]">
                   <img src={previewImageSrc} alt="Preview Resi Asli" className="max-w-full border shadow-sm" />
                 </div>
@@ -500,14 +511,14 @@ export default function App() {
               </div>
             )}
             
-            {/* Canvas Tersembunyi tempat PDF.js menggambar */}
             <canvas ref={previewCanvasRef} style={{ display: 'none' }}></canvas>
           </div>
         )}
 
-        {/* TAB SETTINGS */}
+        {/* TAB SETTINGS (DENGAN OPSIONAL UKURAN KERTAS) */}
         {activeTab === 'settings' && (
           <div className="bg-white p-4 rounded-lg border space-y-4 shadow-sm">
+            {/* 1. STATUS PRINTER BLUETOOTH */}
             <div>
               <label className="text-xs font-bold text-gray-600 block mb-1">Status Printer Bluetooth</label>
               <div className="flex gap-2">
@@ -525,6 +536,20 @@ export default function App() {
                   <span>Pindai</span>
                 </button>
               </div>
+            </div>
+
+            {/* 2. PILIHAN UKURAN KERTAS (50mm / 58mm, 80mm, 100mm) */}
+            <div>
+              <label className="text-xs font-bold text-gray-600 block mb-1">Ukuran Kertas Printer</label>
+              <select
+                value={printerSettings.paperSize || '58'}
+                onChange={(e) => setPrinterSettings(prev => ({ ...prev, paperSize: e.target.value }))}
+                className="w-full p-2.5 border rounded-lg text-sm bg-white font-medium focus:outline-none focus:ring-2 focus:ring-teal-800"
+              >
+                <option value="58">50mm / 58mm (Kecil - Standar RPP02N)</option>
+                <option value="80">80mm (Sedang - Kasir / Mini POS)</option>
+                <option value="100">100mm / 104mm (Besar - Label Shipping)</option>
+              </select>
             </div>
           </div>
         )}
