@@ -546,9 +546,9 @@ export default function App() {
                 onChange={(e) => setPrinterSettings(prev => ({ ...prev, paperSize: e.target.value }))}
                 className="w-full p-2.5 border rounded-lg text-sm bg-white font-medium focus:outline-none focus:ring-2 focus:ring-teal-800"
               >
-                <option value="58">50mm / 58mm (Kecil - Standar RPP02N)</option>
-                <option value="80">80mm (Sedang - Kasir / Mini POS)</option>
-                <option value="100">100mm / 104mm (Besar - Label Shipping)</option>
+                <option value="58">50mm / 58mm (Kecil)</option>
+                <option value="80">80mm (Sedang)</option>
+                <option value="100">100mm / 104mm (Besar)</option>
               </select>
             </div>
           </div>
