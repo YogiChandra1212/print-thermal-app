@@ -21,7 +21,7 @@ export default function App() {
     return saved ? JSON.parse(saved) : {
       printerName: 'Belum Terhubung',
       printerId: null,
-      paperSize: '58' // Pilihan default: '58' (58mm/50mm), '80' (80mm), '100' (100mm)
+      paperSize: '80' // Default diset ke 80mm sesuai printer Smartcom kamu
     };
   });
 
@@ -68,7 +68,7 @@ export default function App() {
   // HELPER UNTUK MENDAPATKAN TARGET WIDTH (DOTS) BERDASARKAN SETTING KERTAS
   const getTargetWidth = () => {
     const size = printerSettings.paperSize || '58';
-    if (size === '80') return 576;  // 80mm
+    if (size === '80') return 576;  // 80mm (Smartcom Anda)
     if (size === '100') return 800; // 100mm
     return 384;                     // 58mm / 50mm
   };
@@ -141,7 +141,7 @@ export default function App() {
     }
   };
 
-  // FUNGSI CETAK DOKUMEN / GAMBAR (DINAMIS SESUAI LEBAR KERTAS DI SETTING)
+  // FUNGSI CETAK DOKUMEN / GAMBAR (ANTI BUFFER OVERFLOW)
   const handlePrintDocument = async () => {
     const canvasElement = previewCanvasRef.current;
     if (!canvasElement) {
@@ -152,7 +152,7 @@ export default function App() {
     try {
       setIsPrinting(true);
       const sourceCanvas = canvasElement;
-      const TARGET_WIDTH = getTargetWidth(); // Dinamis 384, 576, atau 800 dots
+      const TARGET_WIDTH = getTargetWidth();
       const scale = TARGET_WIDTH / sourceCanvas.width;
       const targetHeight = Math.round(sourceCanvas.height * scale);
 
@@ -179,7 +179,7 @@ export default function App() {
       await characteristic.writeValue(new Uint8Array([0x1B, 0x40])); // Reset printer
 
       const bytesPerLine = Math.ceil(TARGET_WIDTH / 8);
-      const blockHeight = 24;
+      const blockHeight = 16; // Diperkecil jadi 16 baris per kirim agar memori Smartcom sangat aman
 
       for (let y = 0; y < targetHeight; y += blockHeight) {
         let blockData = [];
@@ -213,11 +213,12 @@ export default function App() {
           const chunk = new Uint8Array(blockData.slice(i, i + chunkSize));
           await characteristic.writeValue(chunk);
         }
-        await new Promise(r => setTimeout(r, 25));
+        // Jeda diperlambat ke 35ms agar Smartcom tidak muntah karakter aneh
+        await new Promise(r => setTimeout(r, 35));
       }
 
-      await characteristic.writeValue(new Uint8Array([0x1B, 0x64, 0x04])); // Feed
-      alert('Label resi berhasil dicetak utuh!');
+      await characteristic.writeValue(new Uint8Array([0x1B, 0x64, 0x04])); // Feed kertas
+      alert('Resi berhasil dicetak utuh tanpa teks aneh!');
     } catch (err) {
       alert(`Gagal mencetak resi: ${err.message}`);
     } finally {
@@ -225,7 +226,7 @@ export default function App() {
     }
   };
 
-  // HANDLER UPLOAD IMAGE
+  // HANDLER UPLOAD IMAGE DENGAN OPTIMALISASI
   const handleImageUpload = (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -237,13 +238,18 @@ export default function App() {
         const targetW = getTargetWidth();
         const canvas = previewCanvasRef.current;
         if (!canvas) return;
+
+        const maxH = 1200;
+        let targetH = Math.round((img.height / img.width) * targetW);
+        if (targetH > maxH) targetH = maxH;
+
         canvas.width = targetW;
-        canvas.height = Math.round((img.height / img.width) * targetW);
+        canvas.height = targetH;
         const ctx = canvas.getContext('2d');
         ctx.fillStyle = '#FFFFFF';
         ctx.fillRect(0, 0, canvas.width, canvas.height);
-        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-        setPreviewImageSrc(canvas.toDataURL());
+        ctx.drawImage(img, 0, 0, targetW, targetH);
+        setPreviewImageSrc(canvas.toDataURL('image/jpeg', 0.8));
       };
       img.src = event.target.result;
     };
@@ -289,7 +295,7 @@ export default function App() {
       };
 
       await page.render(renderContext).promise;
-      setPreviewImageSrc(canvas.toDataURL());
+      setPreviewImageSrc(canvas.toDataURL('image/jpeg', 0.8));
     } catch (err) {
       alert(`Gagal merender PDF: ${err.message}`);
     } finally {
@@ -515,10 +521,9 @@ export default function App() {
           </div>
         )}
 
-        {/* TAB SETTINGS (DENGAN OPSIONAL UKURAN KERTAS) */}
+        {/* TAB SETTINGS */}
         {activeTab === 'settings' && (
           <div className="bg-white p-4 rounded-lg border space-y-4 shadow-sm">
-            {/* 1. STATUS PRINTER BLUETOOTH */}
             <div>
               <label className="text-xs font-bold text-gray-600 block mb-1">Status Printer Bluetooth</label>
               <div className="flex gap-2">
@@ -538,16 +543,15 @@ export default function App() {
               </div>
             </div>
 
-            {/* 2. PILIHAN UKURAN KERTAS (50mm / 58mm, 80mm, 100mm) */}
             <div>
               <label className="text-xs font-bold text-gray-600 block mb-1">Ukuran Kertas Printer</label>
               <select
-                value={printerSettings.paperSize || '58'}
+                value={printerSettings.paperSize || '80'}
                 onChange={(e) => setPrinterSettings(prev => ({ ...prev, paperSize: e.target.value }))}
                 className="w-full p-2.5 border rounded-lg text-sm bg-white font-medium focus:outline-none focus:ring-2 focus:ring-teal-800"
               >
                 <option value="58">50mm / 58mm (Kecil)</option>
-                <option value="80">80mm (Sedang)</option>
+                <option value="80">80mm (Smartcom Standard)</option>
                 <option value="100">100mm / 104mm (Besar)</option>
               </select>
             </div>
@@ -556,7 +560,7 @@ export default function App() {
 
       </div>
 
-      {/* BOTTOM NAVIGATION (4 TAB) */}
+      {/* BOTTOM NAVIGATION */}
       <div className="bg-teal-800 text-white flex justify-around items-center p-3 shadow-inner">
         <button 
           onClick={() => setActiveTab('text')} 
