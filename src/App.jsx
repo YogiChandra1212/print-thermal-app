@@ -33,7 +33,6 @@ export default function App() {
   const [freeText, setFreeText] = useState('');
   const [textSize, setTextSize] = useState('normal');
 
-  // FORM INPUT ALAMAT SESUAI REQUEST
   const [addressData, setAddressData] = useState({
     kurir: 'J&T EXPRESS',
     kodeBooking: 'JJ2000129454',
@@ -84,9 +83,9 @@ export default function App() {
 
   const getTargetWidth = () => {
     const size = printerSettings.paperSize || '80';
-    if (size === '100') return 800; // 100mm (800 dots)
-    if (size === '80') return 576;  // 80mm
-    return 384;                     // 58mm
+    if (size === '100') return 800;
+    if (size === '80') return 576;
+    return 384;
   };
 
   const applyContrastFilter = (canvas, mode) => {
@@ -265,7 +264,7 @@ export default function App() {
     }
   };
 
-  // HELPER UNTUK MENGIRIM KODE TSPL (BAHASA PRINTER BARCODE XPRINTER 100mm)
+  // DIPERBAIKI: LOGIKA BIT TSPL DIMODIFIKASI DENGAN ^ 0xFF AGAR TIDAK INVERT/TERBALIK
   const printTSPLCanvas = async (canvas) => {
     const device = await navigator.bluetooth.requestDevice({
       acceptAllDevices: true,
@@ -300,7 +299,7 @@ export default function App() {
             }
           }
         }
-        bitmapData[y * widthBytes + x] = byte;
+        bitmapData[y * widthBytes + x] = byte ^ 0xFF;
       }
     }
 
@@ -320,7 +319,6 @@ export default function App() {
     }
   };
 
-  // HELPER UNTUK MENGIRIM ESC/POS (PRINTER STRUK 58mm/80mm)
   const printESCPOSCanvas = async (canvas) => {
     const device = await navigator.bluetooth.requestDevice({
       acceptAllDevices: true,
@@ -381,7 +379,6 @@ export default function App() {
     await characteristic.writeValue(new Uint8Array([0x1B, 0x64, 0x04]));
   };
 
-  // PENCETAKAN IMAGE / PDF
   const handlePrintDocument = async () => {
     const resiCanvas = previewCanvasRef.current;
     const barcodeCanvas = barcodeCanvasRef.current;
@@ -550,14 +547,6 @@ export default function App() {
     }
   };
 
-  // FITUR ALAMAT DENGAN URUTAN SESUAI PERMINTAAN EXACTLY:
-  // 1. KURIR
-  // 2. BARCODE
-  // 3. KODE BARCODE
-  // 4. PENERIMA
-  // 5. ALAMAT PENERIMA
-  // 6. PENGIRIM
-  // 7. CATATAN PENGIRIM
   const handlePrintAddress = async () => {
     try {
       setIsPrinting(true);
@@ -572,13 +561,11 @@ export default function App() {
 
       let currentY = 35;
 
-      // 1. KURIR
       ctx.fillStyle = '#000000';
       ctx.font = 'bold 26px monospace';
       ctx.fillText(`KURIR: ${addressData.kurir}`, 20, currentY);
       currentY += 25;
 
-      // 2 & 3. BARCODE DAN KODE BARCODE
       const tempBc = document.createElement('canvas');
       if (window.JsBarcode) {
         window.JsBarcode(tempBc, addressData.kodeBooking || 'JJ2000129454', {
@@ -602,7 +589,6 @@ export default function App() {
       ctx.stroke();
       currentY += 25;
 
-      // 4. PENERIMA
       ctx.font = 'bold 18px sans-serif';
       ctx.fillText('PENERIMA:', 20, currentY);
       currentY += 25;
@@ -610,7 +596,6 @@ export default function App() {
       ctx.fillText(addressData.penerima, 20, currentY);
       currentY += 35;
 
-      // 5. ALAMAT PENERIMA
       ctx.font = 'bold 18px sans-serif';
       ctx.fillText('ALAMAT PENERIMA:', 20, currentY);
       currentY += 25;
@@ -638,7 +623,6 @@ export default function App() {
       ctx.stroke();
       currentY += 25;
 
-      // 6. PENGIRIM
       ctx.font = 'bold 18px sans-serif';
       ctx.fillText('PENGIRIM:', 20, currentY);
       currentY += 25;
@@ -646,7 +630,6 @@ export default function App() {
       ctx.fillText(addressData.pengirim, 20, currentY);
       currentY += 35;
 
-      // 7. CATATAN PENGIRIM
       if (addressData.catatan.trim()) {
         ctx.font = 'bold 16px sans-serif';
         ctx.fillText(`CATATAN: ${addressData.catatan}`, 20, currentY);
