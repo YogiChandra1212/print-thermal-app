@@ -11,8 +11,7 @@ import {
   Loader2,
   Trash2,
   Sliders,
-  Crop,
-  Barcode
+  Crop
 } from 'lucide-react';
 
 export default function App() {
@@ -34,11 +33,14 @@ export default function App() {
   const [freeText, setFreeText] = useState('');
   const [textSize, setTextSize] = useState('normal');
 
+  // FORM INPUT ALAMAT SESUAI REQUEST
   const [addressData, setAddressData] = useState({
-    penerima: 'Andi Teile\nJl. Raya Saketi Km.07 Kp.Pagenggang Babakan Rt.020/002\nKab. Lebak, Banten, 42391',
-    pengirim: 'Toko Berkah Utama\nJl. Merdeka No. 45 Tangerang',
-    jasaKurir: 'J&T EXPRESS',
+    kurir: 'J&T EXPRESS',
     kodeBooking: 'JJ2000129454',
+    penerima: 'Andi Teile',
+    alamatPenerima: 'Jl. Raya Saketi Km.07 Kp.Pagenggang Babakan Rt.020/002 Kab. Lebak, Banten, 42391',
+    pengirim: 'Toko Berkah Utama - Jl. Merdeka No. 45 Tangerang',
+    catatan: 'Bebas aga gw mah'
   });
 
   const [previewImageSrc, setPreviewImageSrc] = useState(null);
@@ -80,11 +82,10 @@ export default function App() {
     }
   }, []);
 
-  // PENYESUAIAN TARGET WIDTH PRESISI UNTUK 80mm DAN 100mm (XPRINTER)
   const getTargetWidth = () => {
     const size = printerSettings.paperSize || '80';
-    if (size === '100') return 800; // 100mm / Xprinter menggunakan 800 dots
-    if (size === '80') return 576;  // 80mm standar
+    if (size === '100') return 800; // 100mm (800 dots)
+    if (size === '80') return 576;  // 80mm
     return 384;                     // 58mm
   };
 
@@ -170,7 +171,7 @@ export default function App() {
     const canvas = previewCanvasRef.current;
     if (!canvas) return;
 
-    const maxH = 2000;
+    const maxH = 2200;
     let targetH = Math.round((imgElement.height / imgElement.width) * targetW);
     if (targetH > maxH) targetH = maxH;
 
@@ -264,36 +265,123 @@ export default function App() {
     }
   };
 
-  const sendDirectEscPosText = async (binaryData) => {
-    if (!navigator.bluetooth) {
-      alert('Browser tidak mendukung Web Bluetooth.');
-      return;
-    }
-    setIsPrinting(true);
-    try {
-      const device = await navigator.bluetooth.requestDevice({
-        acceptAllDevices: true,
-        optionalServices: ['000018f0-0000-1000-8000-00805f9b34fb', '49535343-fe7d-4ae5-8fa9-9fafd205e455']
-      });
-      const server = await device.gatt.connect();
-      const service = await server.getPrimaryService('000018f0-0000-1000-8000-00805f9b34fb');
-      const characteristic = await service.getCharacteristic('00002af1-0000-1000-8000-00805f9b34fb');
+  // HELPER UNTUK MENGIRIM KODE TSPL (BAHASA PRINTER BARCODE XPRINTER 100mm)
+  const printTSPLCanvas = async (canvas) => {
+    const device = await navigator.bluetooth.requestDevice({
+      acceptAllDevices: true,
+      optionalServices: ['000018f0-0000-1000-8000-00805f9b34fb', '49535343-fe7d-4ae5-8fa9-9fafd205e455']
+    });
+    const server = await device.gatt.connect();
+    const service = await server.getPrimaryService('000018f0-0000-1000-8000-00805f9b34fb');
+    const characteristic = await service.getCharacteristic('00002af1-0000-1000-8000-00805f9b34fb');
 
-      const chunkSize = 128;
-      for (let i = 0; i < binaryData.length; i += chunkSize) {
-        const chunk = new Uint8Array(binaryData.slice(i, i + chunkSize));
-        await characteristic.writeValue(chunk);
-        await new Promise(r => setTimeout(r, 25));
+    const widthInMm = 100;
+    const heightInMm = Math.round((canvas.height / canvas.width) * 100);
+
+    const encoder = new TextEncoder();
+    let initCmd = `SIZE ${widthInMm} mm, ${heightInMm} mm\nGAP 3 mm, 0 mm\nCLS\n`;
+    await characteristic.writeValue(encoder.encode(initCmd));
+
+    const ctx = canvas.getContext('2d');
+    const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+    const widthBytes = Math.ceil(canvas.width / 8);
+
+    let bitmapData = new Uint8Array(widthBytes * canvas.height);
+    for (let y = 0; y < canvas.height; y++) {
+      for (let x = 0; x < widthBytes; x++) {
+        let byte = 0;
+        for (let bit = 0; bit < 8; bit++) {
+          let px = x * 8 + bit;
+          let idx = (y * canvas.width + px) * 4;
+          if (px < canvas.width) {
+            let avg = (imgData[idx] + imgData[idx + 1] + imgData[idx + 2]) / 3;
+            if (avg < 140) {
+              byte |= (0x80 >> bit);
+            }
+          }
+        }
+        bitmapData[y * widthBytes + x] = byte;
       }
-      alert('Berhasil dicetak!');
-    } catch (err) {
-      alert(`Gagal: ${err.message}`);
-    } finally {
-      setIsPrinting(false);
+    }
+
+    let bmpCmdHeader = encoder.encode(`BITMAP 0,0,${widthBytes},${canvas.height},0,`);
+    let printCmdTail = encoder.encode(`\nPRINT 1,1\n`);
+
+    let fullPayload = new Uint8Array(bmpCmdHeader.length + bitmapData.length + printCmdTail.length);
+    fullPayload.set(bmpCmdHeader, 0);
+    fullPayload.set(bitmapData, bmpCmdHeader.length);
+    fullPayload.set(printCmdTail, bmpCmdHeader.length + bitmapData.length);
+
+    const chunkSize = 128;
+    for (let i = 0; i < fullPayload.length; i += chunkSize) {
+      const chunk = new Uint8Array(fullPayload.slice(i, i + chunkSize));
+      await characteristic.writeValue(chunk);
+      await new Promise(r => setTimeout(r, 20));
     }
   };
 
-  // PENCETAKAN UNIVERSAL YANG STABIL UNTUK 80mm DAN 100mm (XPRINTER)
+  // HELPER UNTUK MENGIRIM ESC/POS (PRINTER STRUK 58mm/80mm)
+  const printESCPOSCanvas = async (canvas) => {
+    const device = await navigator.bluetooth.requestDevice({
+      acceptAllDevices: true,
+      optionalServices: ['000018f0-0000-1000-8000-00805f9b34fb', '49535343-fe7d-4ae5-8fa9-9fafd205e455']
+    });
+    const server = await device.gatt.connect();
+    const service = await server.getPrimaryService('000018f0-0000-1000-8000-00805f9b34fb');
+    const characteristic = await service.getCharacteristic('00002af1-0000-1000-8000-00805f9b34fb');
+
+    await characteristic.writeValue(new Uint8Array([0x1B, 0x40]));
+    await new Promise(r => setTimeout(r, 80));
+
+    const ctx = canvas.getContext('2d');
+    const finalImageData = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+
+    const bytesPerLine = Math.ceil(canvas.width / 8);
+    const totalHeight = canvas.height;
+    const blockHeight = 16;
+
+    for (let y = 0; y < totalHeight; y += blockHeight) {
+      let blockData = [];
+      let curBlockH = Math.min(blockHeight, totalHeight - y);
+
+      blockData.push(0x1D, 0x76, 0x30, 0x00);
+      blockData.push(bytesPerLine & 0xFF, (bytesPerLine >> 8) & 0xFF);
+      blockData.push(curBlockH & 0xFF, (curBlockH >> 8) & 0xFF);
+
+      for (let py = 0; py < curBlockH; py++) {
+        for (let x = 0; x < bytesPerLine; x++) {
+          let byte = 0;
+          for (let bit = 0; bit < 8; bit++) {
+            let pixelX = x * 8 + bit;
+            let idx = ((y + py) * canvas.width + pixelX) * 4;
+            
+            if (pixelX < canvas.width) {
+              let r = finalImageData[idx];
+              let g = finalImageData[idx + 1];
+              let b = finalImageData[idx + 2];
+              let avg = (r + g + b) / 3;
+
+              if (avg < 140) {
+                byte |= (0x80 >> bit);
+              }
+            }
+          }
+          blockData.push(byte);
+        }
+      }
+
+      const chunkSize = 128;
+      for (let i = 0; i < blockData.length; i += chunkSize) {
+        const chunk = new Uint8Array(blockData.slice(i, i + chunkSize));
+        await characteristic.writeValue(chunk);
+      }
+      await new Promise(r => setTimeout(r, 35));
+    }
+
+    await characteristic.writeValue(new Uint8Array([0x1B, 0x64, 0x04]));
+  };
+
+  // PENCETAKAN IMAGE / PDF
   const handlePrintDocument = async () => {
     const resiCanvas = previewCanvasRef.current;
     const barcodeCanvas = barcodeCanvasRef.current;
@@ -344,63 +432,12 @@ export default function App() {
 
       comboCtx.drawImage(croppedCanvas, 0, bcH + 10);
 
-      const finalImageData = comboCtx.getImageData(0, 0, TARGET_WIDTH, combinedCanvas.height).data;
-
-      const device = await navigator.bluetooth.requestDevice({
-        acceptAllDevices: true,
-        optionalServices: ['000018f0-0000-1000-8000-00805f9b34fb', '49535343-fe7d-4ae5-8fa9-9fafd205e455']
-      });
-      const server = await device.gatt.connect();
-      const service = await server.getPrimaryService('000018f0-0000-1000-8000-00805f9b34fb');
-      const characteristic = await service.getCharacteristic('00002af1-0000-1000-8000-00805f9b34fb');
-
-      // RESET PRINTER
-      await characteristic.writeValue(new Uint8Array([0x1B, 0x40]));
-      await new Promise(r => setTimeout(r, 80));
-
-      const bytesPerLine = Math.ceil(TARGET_WIDTH / 8);
-      const totalHeight = combinedCanvas.height;
-      const blockHeight = 16; // Block height aman untuk Xprinter & Smartcom
-
-      for (let y = 0; y < totalHeight; y += blockHeight) {
-        let blockData = [];
-        let curBlockH = Math.min(blockHeight, totalHeight - y);
-
-        blockData.push(0x1D, 0x76, 0x30, 0x00);
-        blockData.push(bytesPerLine & 0xFF, (bytesPerLine >> 8) & 0xFF);
-        blockData.push(curBlockH & 0xFF, (curBlockH >> 8) & 0xFF);
-
-        for (let py = 0; py < curBlockH; py++) {
-          for (let x = 0; x < bytesPerLine; x++) {
-            let byte = 0;
-            for (let bit = 0; bit < 8; bit++) {
-              let pixelX = x * 8 + bit;
-              let idx = ((y + py) * TARGET_WIDTH + pixelX) * 4;
-              
-              if (pixelX < TARGET_WIDTH) {
-                let r = finalImageData[idx];
-                let g = finalImageData[idx + 1];
-                let b = finalImageData[idx + 2];
-                let avg = (r + g + b) / 3;
-
-                if (avg < 140) {
-                  byte |= (0x80 >> bit);
-                }
-              }
-            }
-            blockData.push(byte);
-          }
-        }
-
-        const chunkSize = 128;
-        for (let i = 0; i < blockData.length; i += chunkSize) {
-          const chunk = new Uint8Array(blockData.slice(i, i + chunkSize));
-          await characteristic.writeValue(chunk);
-        }
-        await new Promise(r => setTimeout(r, 45));
+      if (printerSettings.paperSize === '100') {
+        await printTSPLCanvas(combinedCanvas);
+      } else {
+        await printESCPOSCanvas(combinedCanvas);
       }
 
-      await characteristic.writeValue(new Uint8Array([0x1B, 0x64, 0x04]));
       alert('Resi berhasil dicetak!');
     } catch (err) {
       alert(`Gagal mencetak: ${err.message}`);
@@ -470,137 +507,166 @@ export default function App() {
     }
   };
 
-  // TEXT BEBAS DENGAN INISIALISASI BUFFER ESC/POS YANG STABIL
-  const handlePrintFreeText = () => {
+  const handlePrintFreeText = async () => {
     if (!freeText.trim()) return;
-    let bytes = [0x1B, 0x40, 0x1B, 0x61, 0x00];
-    bytes.push(0x1D, 0x21, textSize === 'large' ? 0x11 : 0x00);
-    const encoder = new TextEncoder();
-    bytes = bytes.concat(Array.from(encoder.encode(freeText + '\n\n\n\x1B\x64\x04')));
-    sendDirectEscPosText(bytes);
+    try {
+      setIsPrinting(true);
+      const TARGET_WIDTH = getTargetWidth();
+      const textCanvas = document.createElement('canvas');
+      textCanvas.width = TARGET_WIDTH;
+      textCanvas.height = 300;
+      const ctx = textCanvas.getContext('2d');
+      ctx.fillStyle = '#FFFFFF';
+      ctx.fillRect(0, 0, textCanvas.width, textCanvas.height);
+
+      ctx.fillStyle = '#000000';
+      ctx.font = textSize === 'large' ? 'bold 28px sans-serif' : '20px sans-serif';
+      
+      const lines = freeText.split('\n');
+      let y = 40;
+      lines.forEach(l => {
+        ctx.fillText(l, 20, y);
+        y += textSize === 'large' ? 36 : 26;
+      });
+
+      const fitCanvas = document.createElement('canvas');
+      fitCanvas.width = TARGET_WIDTH;
+      fitCanvas.height = y + 20;
+      const fCtx = fitCanvas.getContext('2d');
+      fCtx.fillStyle = '#FFFFFF';
+      fCtx.fillRect(0, 0, fitCanvas.width, fitCanvas.height);
+      fCtx.drawImage(textCanvas, 0, 0);
+
+      if (printerSettings.paperSize === '100') {
+        await printTSPLCanvas(fitCanvas);
+      } else {
+        await printESCPOSCanvas(fitCanvas);
+      }
+      alert('Teks berhasil dicetak!');
+    } catch (e) {
+      alert(`Gagal cetak teks: ${e.message}`);
+    } finally {
+      setIsPrinting(false);
+    }
   };
 
-  // FITUR ALAMAT SEKARANG DILENGKAPI GENERATE BARCODE OTOMATIS & ESC/POS COMMAND
+  // FITUR ALAMAT DENGAN URUTAN SESUAI PERMINTAAN EXACTLY:
+  // 1. KURIR
+  // 2. BARCODE
+  // 3. KODE BARCODE
+  // 4. PENERIMA
+  // 5. ALAMAT PENERIMA
+  // 6. PENGIRIM
+  // 7. CATATAN PENGIRIM
   const handlePrintAddress = async () => {
     try {
       setIsPrinting(true);
       const TARGET_WIDTH = getTargetWidth();
 
-      // Buat Canvas khusus untuk label alamat agar langsung menjadi barcode + teks grafis yang rapi di printer
       const addressCanvas = document.createElement('canvas');
       addressCanvas.width = TARGET_WIDTH;
-      addressCanvas.height = 400;
+      addressCanvas.height = 700;
       const ctx = addressCanvas.getContext('2d');
       ctx.fillStyle = '#FFFFFF';
       ctx.fillRect(0, 0, addressCanvas.width, addressCanvas.height);
 
+      let currentY = 35;
+
+      // 1. KURIR
       ctx.fillStyle = '#000000';
-      ctx.font = 'bold 24px monospace';
-      ctx.fillText(`KURIR: ${addressData.jasaKurir}`, 20, 40);
-      ctx.font = 'bold 20px monospace';
-      ctx.fillText(`BOOKING: ${addressData.kodeBooking}`, 20, 75);
+      ctx.font = 'bold 26px monospace';
+      ctx.fillText(`KURIR: ${addressData.kurir}`, 20, currentY);
+      currentY += 25;
 
-      ctx.beginPath();
-      ctx.moveTo(20, 90);
-      ctx.lineTo(TARGET_WIDTH - 20, 90);
-      ctx.lineWidth = 2;
-      ctx.stroke();
-
-      ctx.font = 'bold 18px sans-serif';
-      ctx.fillText('PENGIRIM:', 20, 125);
-      ctx.font = '16px sans-serif';
-      let pengirimLines = addressData.pengirim.split('\n');
-      pengirimLines.forEach((line, idx) => {
-        ctx.fillText(line, 20, 150 + (idx * 22));
-      });
-
-      let nextY = 150 + (pengirimLines.length * 22) + 15;
-      ctx.beginPath();
-      ctx.moveTo(20, nextY);
-      ctx.lineTo(TARGET_WIDTH - 20, nextY);
-      ctx.stroke();
-
-      nextY += 30;
-      ctx.font = 'bold 18px sans-serif';
-      ctx.fillText('PENERIMA:', 20, nextY);
-      ctx.font = '16px sans-serif';
-      let penerimaLines = addressData.penerima.split('\n');
-      penerimaLines.forEach((line, idx) => {
-        ctx.fillText(line, 20, nextY + 25 + (idx * 22));
-      });
-
-      // Render Barcode di dalam Alamat
+      // 2 & 3. BARCODE DAN KODE BARCODE
       const tempBc = document.createElement('canvas');
       if (window.JsBarcode) {
         window.JsBarcode(tempBc, addressData.kodeBooking || 'JJ2000129454', {
           format: 'CODE128',
           width: TARGET_WIDTH === 800 ? 4 : 3,
-          height: 60,
+          height: 70,
           displayValue: true,
-          fontSize: 16,
+          fontSize: 18,
+          font: 'monospace',
           margin: 10
         });
-        let bcY = nextY + 25 + (penerimaLines.length * 22) + 10;
         let bcX = Math.round((TARGET_WIDTH - tempBc.width) / 2);
-        ctx.drawImage(tempBc, bcX < 0 ? 0 : bcX, bcY);
+        ctx.drawImage(tempBc, bcX < 0 ? 0 : bcX, currentY);
+        currentY += tempBc.height + 20;
       }
 
-      const finalImageData = ctx.getImageData(0, 0, TARGET_WIDTH, addressCanvas.height).data;
+      ctx.beginPath();
+      ctx.moveTo(20, currentY);
+      ctx.lineTo(TARGET_WIDTH - 20, currentY);
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      currentY += 25;
 
-      const device = await navigator.bluetooth.requestDevice({
-        acceptAllDevices: true,
-        optionalServices: ['000018f0-0000-1000-8000-00805f9b34fb', '49535343-fe7d-4ae5-8fa9-9fafd205e455']
-      });
-      const server = await device.gatt.connect();
-      const service = await server.getPrimaryService('000018f0-0000-1000-8000-00805f9b34fb');
-      const characteristic = await service.getCharacteristic('00002af1-0000-1000-8000-00805f9b34fb');
+      // 4. PENERIMA
+      ctx.font = 'bold 18px sans-serif';
+      ctx.fillText('PENERIMA:', 20, currentY);
+      currentY += 25;
+      ctx.font = '18px sans-serif';
+      ctx.fillText(addressData.penerima, 20, currentY);
+      currentY += 35;
 
-      await characteristic.writeValue(new Uint8Array([0x1B, 0x40]));
-      await new Promise(r => setTimeout(r, 60));
-
-      const bytesPerLine = Math.ceil(TARGET_WIDTH / 8);
-      const totalHeight = addressCanvas.height;
-      const blockHeight = 16;
-
-      for (let y = 0; y < totalHeight; y += blockHeight) {
-        let blockData = [];
-        let curBlockH = Math.min(blockHeight, totalHeight - y);
-
-        blockData.push(0x1D, 0x76, 0x30, 0x00);
-        blockData.push(bytesPerLine & 0xFF, (bytesPerLine >> 8) & 0xFF);
-        blockData.push(curBlockH & 0xFF, (curBlockH >> 8) & 0xFF);
-
-        for (let py = 0; py < curBlockH; py++) {
-          for (let x = 0; x < bytesPerLine; x++) {
-            let byte = 0;
-            for (let bit = 0; bit < 8; bit++) {
-              let pixelX = x * 8 + bit;
-              let idx = ((y + py) * TARGET_WIDTH + pixelX) * 4;
-              
-              if (pixelX < TARGET_WIDTH) {
-                let r = finalImageData[idx];
-                let g = finalImageData[idx + 1];
-                let b = finalImageData[idx + 2];
-                let avg = (r + g + b) / 3;
-
-                if (avg < 140) {
-                  byte |= (0x80 >> bit);
-                }
-              }
-            }
-            blockData.push(byte);
-          }
+      // 5. ALAMAT PENERIMA
+      ctx.font = 'bold 18px sans-serif';
+      ctx.fillText('ALAMAT PENERIMA:', 20, currentY);
+      currentY += 25;
+      ctx.font = '16px sans-serif';
+      
+      const words = addressData.alamatPenerima.split(' ');
+      let line = '';
+      for (let i = 0; i < words.length; i++) {
+        let testLine = line + words[i] + ' ';
+        let metrics = ctx.measureText(testLine);
+        if (metrics.width > TARGET_WIDTH - 40 && i > 0) {
+          ctx.fillText(line, 20, currentY);
+          line = words[i] + ' ';
+          currentY += 24;
+        } else {
+          line = testLine;
         }
+      }
+      ctx.fillText(line, 20, currentY);
+      currentY += 35;
 
-        const chunkSize = 128;
-        for (let i = 0; i < blockData.length; i += chunkSize) {
-          const chunk = new Uint8Array(blockData.slice(i, i + chunkSize));
-          await characteristic.writeValue(chunk);
-        }
-        await new Promise(r => setTimeout(r, 35));
+      ctx.beginPath();
+      ctx.moveTo(20, currentY);
+      ctx.lineTo(TARGET_WIDTH - 20, currentY);
+      ctx.stroke();
+      currentY += 25;
+
+      // 6. PENGIRIM
+      ctx.font = 'bold 18px sans-serif';
+      ctx.fillText('PENGIRIM:', 20, currentY);
+      currentY += 25;
+      ctx.font = '16px sans-serif';
+      ctx.fillText(addressData.pengirim, 20, currentY);
+      currentY += 35;
+
+      // 7. CATATAN PENGIRIM
+      if (addressData.catatan.trim()) {
+        ctx.font = 'bold 16px sans-serif';
+        ctx.fillText(`CATATAN: ${addressData.catatan}`, 20, currentY);
+        currentY += 30;
       }
 
-      await characteristic.writeValue(new Uint8Array([0x1B, 0x64, 0x04]));
+      const finalCanvas = document.createElement('canvas');
+      finalCanvas.width = TARGET_WIDTH;
+      finalCanvas.height = currentY + 30;
+      const fCtx = finalCanvas.getContext('2d');
+      fCtx.fillStyle = '#FFFFFF';
+      fCtx.fillRect(0, 0, finalCanvas.width, finalCanvas.height);
+      fCtx.drawImage(addressCanvas, 0, 0);
+
+      if (printerSettings.paperSize === '100') {
+        await printTSPLCanvas(finalCanvas);
+      } else {
+        await printESCPOSCanvas(finalCanvas);
+      }
+
       alert('Label Alamat berhasil dicetak!');
     } catch (err) {
       alert(`Gagal mencetak alamat: ${err.message}`);
@@ -664,16 +730,16 @@ export default function App() {
         {activeTab === 'alamat' && (
           <div className="space-y-3 bg-white p-4 rounded-lg border shadow-sm">
             <div>
-              <label className="text-xs font-bold text-gray-600 block mb-1">Jasa Kurir</label>
+              <label className="text-xs font-bold text-gray-600 block mb-1">Kurir</label>
               <input 
                 type="text" 
-                value={addressData.jasaKurir} 
-                onChange={(e) => setAddressData({...addressData, jasaKurir: e.target.value})} 
+                value={addressData.kurir} 
+                onChange={(e) => setAddressData({...addressData, kurir: e.target.value})} 
                 className="w-full p-2.5 border rounded text-sm bg-white font-semibold" 
               />
             </div>
             <div>
-              <label className="text-xs font-bold text-gray-600 block mb-1">Kode Booking / Resi</label>
+              <label className="text-xs font-bold text-gray-600 block mb-1">Kode Booking</label>
               <input 
                 type="text" 
                 value={addressData.kodeBooking} 
@@ -682,21 +748,39 @@ export default function App() {
               />
             </div>
             <div>
-              <label className="text-xs font-bold text-gray-600 block mb-1">Pengirim</label>
+              <label className="text-xs font-bold text-gray-600 block mb-1">Penerima</label>
+              <input 
+                type="text" 
+                value={addressData.penerima} 
+                onChange={(e) => setAddressData({...addressData, penerima: e.target.value})} 
+                className="w-full p-2.5 border rounded text-sm bg-white font-semibold" 
+              />
+            </div>
+            <div>
+              <label className="text-xs font-bold text-gray-600 block mb-1">Alamat Penerima</label>
               <textarea 
-                value={addressData.pengirim} 
-                onChange={(e) => setAddressData({...addressData, pengirim: e.target.value})} 
-                rows={2} 
+                value={addressData.alamatPenerima} 
+                onChange={(e) => setAddressData({...addressData, alamatPenerima: e.target.value})} 
+                rows={3} 
                 className="w-full p-2.5 border rounded bg-white text-sm" 
               />
             </div>
             <div>
-              <label className="text-xs font-bold text-gray-600 block mb-1">Penerima</label>
-              <textarea 
-                value={addressData.penerima} 
-                onChange={(e) => setAddressData({...addressData, penerima: e.target.value})} 
-                rows={3} 
-                className="w-full p-2.5 border rounded bg-white text-sm" 
+              <label className="text-xs font-bold text-gray-600 block mb-1">Pengirim</label>
+              <input 
+                type="text" 
+                value={addressData.pengirim} 
+                onChange={(e) => setAddressData({...addressData, pengirim: e.target.value})} 
+                className="w-full p-2.5 border rounded text-sm bg-white" 
+              />
+            </div>
+            <div>
+              <label className="text-xs font-bold text-gray-600 block mb-1">Catatan</label>
+              <input 
+                type="text" 
+                value={addressData.catatan} 
+                onChange={(e) => setAddressData({...addressData, catatan: e.target.value})} 
+                className="w-full p-2.5 border rounded text-sm bg-white" 
               />
             </div>
             <button 
@@ -839,7 +923,7 @@ export default function App() {
               >
                 <option value="58">50mm / 58mm (Kecil)</option>
                 <option value="80">80mm (Smartcom Standard / RPP300)</option>
-                <option value="100">100mm / 104mm (Xprinter 100mm)</option>
+                <option value="100">100mm / 104mm (Xprinter TSPL)</option>
               </select>
             </div>
           </div>
