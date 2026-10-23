@@ -11,7 +11,7 @@ import {
   Loader2,
   Trash2,
   Sliders,
-  Barcode
+  Crop
 } from 'lucide-react';
 
 export default function App() {
@@ -50,9 +50,14 @@ export default function App() {
   const [generatedBarcodeText, setGeneratedBarcodeText] = useState(null);
   const [barcodeCanvasSrc, setBarcodeCanvasSrc] = useState(null);
 
+  // STATE UNTUK CROP BOX INTERAKTIF (PERSENTASE 0 - 100)
+  const [cropBox, setCropBox] = useState({ top: 5, bottom: 70, left: 5, right: 95 });
+  const [isDragging, setIsDragging] = useState(null); // 'top', 'bottom', 'move', dll
+
   const previewCanvasRef = useRef(null);
   const barcodeCanvasRef = useRef(null);
   const combinedCanvasRef = useRef(null);
+  const containerRef = useRef(null);
 
   const [isPrinting, setIsPrinting] = useState(false);
 
@@ -79,9 +84,9 @@ export default function App() {
 
   const getTargetWidth = () => {
     const size = printerSettings.paperSize || '80';
-    if (size === '100') return 800; // 100mm
-    if (size === '80') return 576;  // 80mm
-    return 384;                     // 58mm
+    if (size === '100') return 800;
+    if (size === '80') return 576;
+    return 384;
   };
 
   const applyContrastFilter = (canvas, mode) => {
@@ -260,6 +265,7 @@ export default function App() {
     }
   };
 
+  // FUNGSI UTAMA PENCETAKAN DENGAN HASIL CROP SESUAI KOTAK MERAH
   const handlePrintDocument = async () => {
     const resiCanvas = previewCanvasRef.current;
     const barcodeCanvas = barcodeCanvasRef.current;
@@ -273,25 +279,46 @@ export default function App() {
       setIsPrinting(true);
       const TARGET_WIDTH = getTargetWidth();
 
+      // HITUNG AREA CROP BERDASARKAN KOTAK (CROP BOX)
+      const cropX = Math.round((cropBox.left / 100) * resiCanvas.width);
+      const cropY = Math.round((cropBox.top / 100) * resiCanvas.height);
+      const cropW = Math.round(((cropBox.right - cropBox.left) / 100) * resiCanvas.width);
+      const cropH = Math.round(((cropBox.bottom - cropBox.top) / 100) * resiCanvas.height);
+
+      // Buat canvas hasil crop
+      const croppedCanvas = document.createElement('canvas');
+      const scaleFactor = TARGET_WIDTH / cropW;
+      croppedCanvas.width = TARGET_WIDTH;
+      croppedCanvas.height = Math.round(cropH * scaleFactor);
+      
+      const cCtx = croppedCanvas.getContext('2d');
+      cCtx.fillStyle = '#FFFFFF';
+      cCtx.fillRect(0, 0, croppedCanvas.width, croppedCanvas.height);
+      cCtx.drawImage(
+        resiCanvas, 
+        cropX, cropY, cropW, cropH, 
+        0, 0, croppedCanvas.width, croppedCanvas.height
+      );
+
       const combinedCanvas = combinedCanvasRef.current;
       const bcH = barcodeCanvas ? barcodeCanvas.height : 0;
-      const resiH = resiCanvas.height;
+      const resiH = croppedCanvas.height;
 
       combinedCanvas.width = TARGET_WIDTH;
       combinedCanvas.height = bcH + resiH + 20;
 
-      const cCtx = combinedCanvas.getContext('2d');
-      cCtx.fillStyle = '#FFFFFF';
-      cCtx.fillRect(0, 0, combinedCanvas.width, combinedCanvas.height);
+      const comboCtx = combinedCanvas.getContext('2d');
+      comboCtx.fillStyle = '#FFFFFF';
+      comboCtx.fillRect(0, 0, combinedCanvas.width, combinedCanvas.height);
 
       if (barcodeCanvas && generatedBarcodeText) {
         const bcDrawX = Math.round((TARGET_WIDTH - barcodeCanvas.width) / 2);
-        cCtx.drawImage(barcodeCanvas, bcDrawX < 0 ? 0 : bcDrawX, 0);
+        comboCtx.drawImage(barcodeCanvas, bcDrawX < 0 ? 0 : bcDrawX, 0);
       }
 
-      cCtx.drawImage(resiCanvas, 0, bcH + 10);
+      comboCtx.drawImage(croppedCanvas, 0, bcH + 10);
 
-      const finalImageData = cCtx.getImageData(0, 0, TARGET_WIDTH, combinedCanvas.height).data;
+      const finalImageData = comboCtx.getImageData(0, 0, TARGET_WIDTH, combinedCanvas.height).data;
 
       const device = await navigator.bluetooth.requestDevice({
         acceptAllDevices: true,
@@ -347,7 +374,7 @@ export default function App() {
       }
 
       await characteristic.writeValue(new Uint8Array([0x1B, 0x64, 0x04]));
-      alert('Resi + Barcode berhasil dicetak!');
+      alert('Hasil Crop Resi berhasil dicetak!');
     } catch (err) {
       alert(`Gagal mencetak: ${err.message}`);
     } finally {
@@ -355,7 +382,6 @@ export default function App() {
     }
   };
 
-  // DIPERBAIKI: HANDLER UPLOAD IMAGE YANG LEBIH STABIL
   const handleImageUpload = (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -372,9 +398,6 @@ export default function App() {
             await detectAndGenerateBarcode(previewCanvasRef.current);
           }
         }, 100);
-      };
-      img.onerror = () => {
-        alert('Gagal membaca file gambar.');
       };
       img.src = event.target.result;
     };
@@ -527,6 +550,7 @@ export default function App() {
                   </div>
                 </div>
 
+                {/* KOTAK BARCODE ATAS */}
                 <div className="bg-white border-2 border-teal-800 rounded-lg p-2 text-center shadow-sm">
                   <div className="flex justify-center bg-white overflow-x-auto">
                     {barcodeCanvasSrc && (
@@ -535,13 +559,53 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="border bg-gray-200 rounded-lg p-3 flex justify-center shadow-inner overflow-y-auto max-h-[320px]">
-                  <img src={previewImageSrc} alt="Preview" className="max-w-full border shadow-sm bg-white" />
+                {/* KOTAK PREVIEW UTAMA DENGAN CROP SLIDER INTERAKTIF */}
+                <div className="space-y-2 bg-white p-3 rounded-lg border">
+                  <div className="flex items-center justify-between text-xs font-bold text-gray-600">
+                    <span className="flex items-center gap-1"><Crop size={14} /> Atur Batas Crop Resi</span>
+                    <span className="text-[10px] text-teal-800 font-semibold">Geser slider untuk memotong bagian</span>
+                  </div>
+
+                  {/* PREVIEW GAMBAR DENGAN OVERLAY CROP BOX */}
+                  <div className="relative border bg-gray-300 rounded overflow-hidden flex justify-center max-h-[280px]">
+                    <img src={previewImageSrc} alt="Preview Crop" className="max-w-full object-contain" />
+                    
+                    {/* VISUAL KOTAK CROP MERAH DI ATAS GAMBAR */}
+                    <div 
+                      className="absolute border-2 border-red-500 bg-red-500/10 pointer-events-none"
+                      style={{
+                        top: `${cropBox.top}%`,
+                        bottom: `${100 - cropBox.bottom}%`,
+                        left: `${cropBox.left}%`,
+                        right: `${100 - cropBox.right}%`
+                      }}
+                    ></div>
+                  </div>
+
+                  {/* SLIDER KONTROL CROP (ATAS & BAWAH) */}
+                  <div className="grid grid-cols-2 gap-3 pt-2 text-xs">
+                    <div>
+                      <label className="text-[10px] font-bold text-gray-500 block">Potong Atas: {cropBox.top}%</label>
+                      <input 
+                        type="range" min="0" max="45" value={cropBox.top} 
+                        onChange={(e) => setCropBox({...cropBox, top: Number(e.target.value)})}
+                        className="w-full accent-red-600 cursor-pointer"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-bold text-gray-500 block">Potong Bawah: {100 - cropBox.bottom}%</label>
+                      <input 
+                        type="range" min="50" max="100" value={cropBox.bottom} 
+                        onChange={(e) => setCropBox({...cropBox, bottom: Number(e.target.value)})}
+                        className="w-full accent-red-600 cursor-pointer"
+                      />
+                    </div>
+                  </div>
                 </div>
 
                 <button onClick={handlePrintDocument} disabled={isPrinting} className="w-full bg-teal-800 text-white py-3 rounded-lg flex items-center justify-center gap-2 text-sm font-semibold hover:bg-teal-900 shadow transition">
                   {isPrinting ? <Loader2 size={18} className="animate-spin" /> : <Printer size={18} />}
-                  {isPrinting ? 'Mencetak...' : 'Cetak Sekarang'}
+                  {isPrinting ? 'Mencetak...' : 'Cetak Hasil Crop Sekarang'}
                 </button>
               </div>
             )}
