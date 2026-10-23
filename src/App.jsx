@@ -43,7 +43,6 @@ export default function App() {
   const [pdfFileName, setPdfFileName] = useState('');
   const [isLoadingPdf, setIsLoadingPdf] = useState(false);
   
-  // State Barcode yang di-generate ulang
   const [generatedBarcodeText, setGeneratedBarcodeText] = useState(null);
   const [barcodeCanvasSrc, setBarcodeCanvasSrc] = useState(null);
 
@@ -56,7 +55,6 @@ export default function App() {
     localStorage.setItem('thermal_printer_settings', JSON.stringify(printerSettings));
   }, [printerSettings]);
 
-  // LOAD PDF.JS & JSBARCODE VIA CDN
   useEffect(() => {
     if (!window.pdfjsLib) {
       const scriptPdf = document.createElement('script');
@@ -101,10 +99,11 @@ export default function App() {
     ctx.putImageData(imgData, 0, 0);
   };
 
-  // FUNGSI DETEKSI & GENERATE BARCODE ULANG MENGGUNAKAN JSBARCODE
-  const detectAndGenerateBarcode = async (canvas) => {
+  const detectAndنGenerateBarcode = async (canvas) => {
     setGeneratedBarcodeText(null);
     setBarcodeCanvasSrc(null);
+
+    let foundCode = "JJ2001432099"; // Fallback default resi J&T
 
     try {
       if ('BarcodeDetector' in window) {
@@ -113,21 +112,15 @@ export default function App() {
         });
         const barcodes = await barcodeDetector.detect(canvas);
         if (barcodes && barcodes.length > 0) {
-          const codeVal = barcodes[0].rawValue;
-          setGeneratedBarcodeText(codeVal);
-          renderGeneratedBarcode(codeVal);
-          return;
+          foundCode = barcodes[0].rawValue;
         }
       }
     } catch (e) {
-      console.log('BarcodeDetector fallback:', e);
+      console.log('BarcodeDetector fallback used:', e);
     }
 
-    // Fallback cerdas pencarian teks nomor resi umum (misal format J&T: JJ...)
-    // Jika deteksi otomatis browser gagal, kita ambil string dari nama file atau default
-    const fallbackCode = "JJ2001432099"; // contoh default resi Blibli/J&T
-    setGeneratedBarcodeText(fallbackCode);
-    renderGeneratedBarcode(fallbackCode);
+    setGeneratedBarcodeText(foundCode);
+    renderGeneratedBarcode(foundCode);
   };
 
   const renderGeneratedBarcode = (codeValue) => {
@@ -136,12 +129,15 @@ export default function App() {
     if (!bcCanvas) return;
 
     try {
+      bcCanvas.width = getTargetWidth();
+      bcCanvas.height = 120;
+
       window.JsBarcode(bcCanvas, codeValue, {
         format: 'CODE128',
         width: 3,
-        height: 80,
+        height: 70,
         displayValue: true,
-        fontSize: 16,
+        fontSize: 18,
         font: 'monospace',
         margin: 10
       });
@@ -218,7 +214,6 @@ export default function App() {
     }
   };
 
-  // FUNGSI CETAK: CETAK BARCODE YANG DI-GENERATE ULANG DI ATAS, LALU RESI UTUH DI BAWAHNYA
   const handlePrintDocument = async () => {
     const canvasElement = previewCanvasRef.current;
     const barcodeElement = barcodeCanvasRef.current;
@@ -240,9 +235,8 @@ export default function App() {
       const service = await server.getPrimaryService('000018f0-0000-1000-8000-00805f9b34fb');
       const characteristic = await service.getCharacteristic('00002af1-0000-1000-8000-00805f9b34fb');
 
-      await characteristic.writeValue(new Uint8Array([0x1B, 0x40])); // Reset printer
+      await characteristic.writeValue(new Uint8Array([0x1B, 0x40]));
 
-      // 1. CETAK BARCODE HASIL GENERATE ULANG DI BAGIAN ATAS
       if (barcodeElement && generatedBarcodeText) {
         const bcCtx = barcodeElement.getContext('2d');
         const bcData = bcCtx.getImageData(0, 0, barcodeElement.width, barcodeElement.height).data;
@@ -277,10 +271,9 @@ export default function App() {
           }
           await new Promise(r => setTimeout(r, 30));
         }
-        await characteristic.writeValue(new Uint8Array([0x1B, 0x64, 0x03])); // Jeda kertas
+        await characteristic.writeValue(new Uint8Array([0x1B, 0x64, 0x03]));
       }
 
-      // 2. CETAK RESI UTAMA
       const sourceCanvas = canvasElement;
       const scale = TARGET_WIDTH / sourceCanvas.width;
       const targetHeight = Math.round(sourceCanvas.height * scale);
@@ -335,7 +328,7 @@ export default function App() {
       }
 
       await characteristic.writeValue(new Uint8Array([0x1B, 0x64, 0x04]));
-      alert('Resi + Barcode hasil generate ulang berhasil dicetak!');
+      alert('Resi + Barcode atas berhasil dicetak!');
     } catch (err) {
       alert(`Gagal mencetak: ${err.message}`);
     } finally {
@@ -366,8 +359,7 @@ export default function App() {
         ctx.fillRect(0, 0, canvas.width, canvas.height);
         ctx.drawImage(img, 0, 0, targetW, targetH);
 
-        // GENERATE ULANG BARCODE
-        await detectAndGenerateBarcode(canvas);
+        await detectAndنGenerateBarcode(canvas);
 
         applyThermalMonochrome(canvas);
         setPreviewImageSrc(canvas.toDataURL('image/jpeg', 0.9));
@@ -416,8 +408,7 @@ export default function App() {
 
       await page.render(renderContext).promise;
 
-      // GENERATE ULANG BARCODE
-      await detectAndGenerateBarcode(canvas);
+      await detectAndنGenerateBarcode(canvas);
 
       applyThermalMonochrome(canvas);
       setPreviewImageSrc(canvas.toDataURL('image/jpeg', 0.9));
@@ -541,6 +532,7 @@ export default function App() {
                       setPreviewImageSrc(null); 
                       setPdfFileName(''); 
                       setBarcodeCanvasSrc(null);
+                      setGeneratedBarcodeText(null);
                     }} 
                     className="text-red-600 text-xs flex items-center gap-1 font-medium"
                   >
@@ -553,16 +545,13 @@ export default function App() {
                   <div className="flex items-center justify-center gap-1 text-teal-800 font-bold text-xs uppercase">
                     <Barcode size={16} /> Barcode Di-generate Ulang (Diperbesar)
                   </div>
-                  <div className="flex justify-center p-1 bg-white overflow-x-auto">
-                    {/* Elemen canvas tersembunyi untuk JsBarcode engine */}
-                    <canvas ref={barcodeCanvasRef} style={{ display: barcodeCanvasSrc ? 'none' : 'block' }}></canvas>
-                    {barcodeCanvasSrc && (
+                  <div className="flex justify-center p-2 bg-white overflow-x-auto">
+                    {barcodeCanvasSrc ? (
                       <img src={barcodeCanvasSrc} alt="Barcode Generated" className="max-h-24 object-contain border" />
+                    ) : (
+                      <canvas ref={barcodeCanvasRef} className="max-w-full"></canvas>
                     )}
                   </div>
-                  <p className="text-xs font-mono font-bold text-gray-800">
-                    Nomor Resi: {generatedBarcodeText || "Memproses..."}
-                  </p>
                 </div>
 
                 {/* KOTAK PREVIEW RESI UTAMA */}
@@ -582,6 +571,8 @@ export default function App() {
             )}
             
             <canvas ref={previewCanvasRef} style={{ display: 'none' }}></canvas>
+            {/* Canvas barcode sekarang tetap dirender di DOM agar JsBarcode membaca ukuran dengan benar */}
+            <canvas ref={barcodeCanvasRef} style={{ display: barcodeCanvasSrc ? 'none' : 'block', visibility: 'hidden', position: 'absolute' }}></canvas>
           </div>
         )}
 
@@ -598,7 +589,7 @@ export default function App() {
                 <button 
                   onClick={handleScanBluetooth} 
                   disabled={isScanningBluetooth} 
-                  className="bg-teal-800 text-white px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1"
+                  className="bg-teal-800 text-white px-3 py-2 rounded-lg text-xs font-medium"
                 >
                   {isScanningBluetooth ? <Loader2 size={16} className="animate-spin" /> : <Search size={16} />}
                   <span>Pindai</span>
