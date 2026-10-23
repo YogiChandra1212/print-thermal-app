@@ -11,7 +11,8 @@ import {
   Loader2,
   Trash2,
   Sliders,
-  Crop
+  Crop,
+  Barcode
 } from 'lucide-react';
 
 export default function App() {
@@ -30,11 +31,9 @@ export default function App() {
   const [bluetoothStatus, setBluetoothStatus] = useState('disconnected');
   const [bluetoothError, setBluetoothError] = useState(null);
 
-  // STATE TEXT BEBAS SEMULA
   const [freeText, setFreeText] = useState('');
   const [textSize, setTextSize] = useState('normal');
 
-  // STATE ALAMAT SEMULA
   const [addressData, setAddressData] = useState({
     penerima: 'Andi Teile\nJl. Raya Saketi Km.07 Kp.Pagenggang Babakan Rt.020/002\nKab. Lebak, Banten, 42391',
     pengirim: 'Toko Berkah Utama\nJl. Merdeka No. 45 Tangerang',
@@ -81,11 +80,12 @@ export default function App() {
     }
   }, []);
 
+  // PENYESUAIAN TARGET WIDTH PRESISI UNTUK 80mm DAN 100mm (XPRINTER)
   const getTargetWidth = () => {
     const size = printerSettings.paperSize || '80';
-    if (size === '100') return 576; // Diubah ke 576 dots agar kompatibel penuh dengan buffer raster Xprinter & tidak blank putih
-    if (size === '80') return 576;
-    return 384;
+    if (size === '100') return 800; // 100mm / Xprinter menggunakan 800 dots
+    if (size === '80') return 576;  // 80mm standar
+    return 384;                     // 58mm
   };
 
   const applyContrastFilter = (canvas, mode) => {
@@ -170,7 +170,7 @@ export default function App() {
     const canvas = previewCanvasRef.current;
     if (!canvas) return;
 
-    const maxH = 1800;
+    const maxH = 2000;
     let targetH = Math.round((imgElement.height / imgElement.width) * targetW);
     if (targetH > maxH) targetH = maxH;
 
@@ -215,7 +215,9 @@ export default function App() {
       bcCanvas.width = targetW;
       bcCanvas.height = 140;
 
-      let barWidthScale = targetW === 576 ? 3 : 2;
+      let barWidthScale = 3;
+      if (targetW === 800) barWidthScale = 4;
+      else if (targetW === 384) barWidthScale = 2;
 
       window.JsBarcode(bcCanvas, codeValue, {
         format: 'CODE128',
@@ -281,7 +283,7 @@ export default function App() {
       for (let i = 0; i < binaryData.length; i += chunkSize) {
         const chunk = new Uint8Array(binaryData.slice(i, i + chunkSize));
         await characteristic.writeValue(chunk);
-        await new Promise(r => setTimeout(r, 20));
+        await new Promise(r => setTimeout(r, 25));
       }
       alert('Berhasil dicetak!');
     } catch (err) {
@@ -291,7 +293,7 @@ export default function App() {
     }
   };
 
-  // PENCETAKAN IMAGE / PDF DENGAN STABILITAS XPRINTER & SMARTCOM
+  // PENCETAKAN UNIVERSAL YANG STABIL UNTUK 80mm DAN 100mm (XPRINTER)
   const handlePrintDocument = async () => {
     const resiCanvas = previewCanvasRef.current;
     const barcodeCanvas = barcodeCanvasRef.current;
@@ -352,13 +354,13 @@ export default function App() {
       const service = await server.getPrimaryService('000018f0-0000-1000-8000-00805f9b34fb');
       const characteristic = await service.getCharacteristic('00002af1-0000-1000-8000-00805f9b34fb');
 
-      // Reset Printer
+      // RESET PRINTER
       await characteristic.writeValue(new Uint8Array([0x1B, 0x40]));
-      await new Promise(r => setTimeout(r, 60));
+      await new Promise(r => setTimeout(r, 80));
 
       const bytesPerLine = Math.ceil(TARGET_WIDTH / 8);
       const totalHeight = combinedCanvas.height;
-      const blockHeight = 24; // Dioptimalkan untuk Xprinter
+      const blockHeight = 16; // Block height aman untuk Xprinter & Smartcom
 
       for (let y = 0; y < totalHeight; y += blockHeight) {
         let blockData = [];
@@ -395,7 +397,7 @@ export default function App() {
           const chunk = new Uint8Array(blockData.slice(i, i + chunkSize));
           await characteristic.writeValue(chunk);
         }
-        await new Promise(r => setTimeout(r, 40));
+        await new Promise(r => setTimeout(r, 45));
       }
 
       await characteristic.writeValue(new Uint8Array([0x1B, 0x64, 0x04]));
@@ -468,38 +470,143 @@ export default function App() {
     }
   };
 
-  // FITUR TEXT BEBAS DIKEMBALIKAN SEPERTI SEMULA
+  // TEXT BEBAS DENGAN INISIALISASI BUFFER ESC/POS YANG STABIL
   const handlePrintFreeText = () => {
     if (!freeText.trim()) return;
-    let bytes = [0x1B, 0x40];
+    let bytes = [0x1B, 0x40, 0x1B, 0x61, 0x00];
     bytes.push(0x1D, 0x21, textSize === 'large' ? 0x11 : 0x00);
     const encoder = new TextEncoder();
-    bytes = bytes.concat(Array.from(encoder.encode(freeText + '\n\n\n\n')));
+    bytes = bytes.concat(Array.from(encoder.encode(freeText + '\n\n\n\x1B\x64\x04')));
     sendDirectEscPosText(bytes);
   };
 
-  // FITUR ALAMAT DIKEMBALIKAN SEPERTI SEMULA
-  const handlePrintAddress = () => {
-    let bytes = [0x1B, 0x40];
-    const encoder = new TextEncoder();
-    const addText = (str, isBold = false, align = 0, size = 0x00) => {
-      bytes.push(0x1B, 0x61, align);
-      bytes.push(0x1B, 0x45, isBold ? 1 : 0);
-      bytes.push(0x1D, 0x21, size);
-      bytes = bytes.concat(Array.from(encoder.encode(str + '\n')));
-    };
+  // FITUR ALAMAT SEKARANG DILENGKAPI GENERATE BARCODE OTOMATIS & ESC/POS COMMAND
+  const handlePrintAddress = async () => {
+    try {
+      setIsPrinting(true);
+      const TARGET_WIDTH = getTargetWidth();
 
-    addText(`KURIR: ${addressData.jasaKurir}`, true, 0, 0x11);
-    addText(`BOOKING: ${addressData.kodeBooking}`, true, 0, 0x10);
-    addText('--------------------------------', false, 0, 0x00);
-    addText('PENGIRIM:', true, 0, 0x00);
-    addressData.pengirim.split('\n').forEach(line => addText(line, false, 0, 0x00));
-    addText('--------------------------------', false, 0, 0x00);
-    addText('PENERIMA:', true, 0, 0x00);
-    addressData.penerima.split('\n').forEach(line => addText(line, false, 0, 0x00));
-    addText('--------------------------------', false, 0, 0x00);
-    bytes.push(0x0A, 0x0A, 0x0A, 0x0A);
-    sendDirectEscPosText(bytes);
+      // Buat Canvas khusus untuk label alamat agar langsung menjadi barcode + teks grafis yang rapi di printer
+      const addressCanvas = document.createElement('canvas');
+      addressCanvas.width = TARGET_WIDTH;
+      addressCanvas.height = 400;
+      const ctx = addressCanvas.getContext('2d');
+      ctx.fillStyle = '#FFFFFF';
+      ctx.fillRect(0, 0, addressCanvas.width, addressCanvas.height);
+
+      ctx.fillStyle = '#000000';
+      ctx.font = 'bold 24px monospace';
+      ctx.fillText(`KURIR: ${addressData.jasaKurir}`, 20, 40);
+      ctx.font = 'bold 20px monospace';
+      ctx.fillText(`BOOKING: ${addressData.kodeBooking}`, 20, 75);
+
+      ctx.beginPath();
+      ctx.moveTo(20, 90);
+      ctx.lineTo(TARGET_WIDTH - 20, 90);
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      ctx.font = 'bold 18px sans-serif';
+      ctx.fillText('PENGIRIM:', 20, 125);
+      ctx.font = '16px sans-serif';
+      let pengirimLines = addressData.pengirim.split('\n');
+      pengirimLines.forEach((line, idx) => {
+        ctx.fillText(line, 20, 150 + (idx * 22));
+      });
+
+      let nextY = 150 + (pengirimLines.length * 22) + 15;
+      ctx.beginPath();
+      ctx.moveTo(20, nextY);
+      ctx.lineTo(TARGET_WIDTH - 20, nextY);
+      ctx.stroke();
+
+      nextY += 30;
+      ctx.font = 'bold 18px sans-serif';
+      ctx.fillText('PENERIMA:', 20, nextY);
+      ctx.font = '16px sans-serif';
+      let penerimaLines = addressData.penerima.split('\n');
+      penerimaLines.forEach((line, idx) => {
+        ctx.fillText(line, 20, nextY + 25 + (idx * 22));
+      });
+
+      // Render Barcode di dalam Alamat
+      const tempBc = document.createElement('canvas');
+      if (window.JsBarcode) {
+        window.JsBarcode(tempBc, addressData.kodeBooking || 'JJ2000129454', {
+          format: 'CODE128',
+          width: TARGET_WIDTH === 800 ? 4 : 3,
+          height: 60,
+          displayValue: true,
+          fontSize: 16,
+          margin: 10
+        });
+        let bcY = nextY + 25 + (penerimaLines.length * 22) + 10;
+        let bcX = Math.round((TARGET_WIDTH - tempBc.width) / 2);
+        ctx.drawImage(tempBc, bcX < 0 ? 0 : bcX, bcY);
+      }
+
+      const finalImageData = ctx.getImageData(0, 0, TARGET_WIDTH, addressCanvas.height).data;
+
+      const device = await navigator.bluetooth.requestDevice({
+        acceptAllDevices: true,
+        optionalServices: ['000018f0-0000-1000-8000-00805f9b34fb', '49535343-fe7d-4ae5-8fa9-9fafd205e455']
+      });
+      const server = await device.gatt.connect();
+      const service = await server.getPrimaryService('000018f0-0000-1000-8000-00805f9b34fb');
+      const characteristic = await service.getCharacteristic('00002af1-0000-1000-8000-00805f9b34fb');
+
+      await characteristic.writeValue(new Uint8Array([0x1B, 0x40]));
+      await new Promise(r => setTimeout(r, 60));
+
+      const bytesPerLine = Math.ceil(TARGET_WIDTH / 8);
+      const totalHeight = addressCanvas.height;
+      const blockHeight = 16;
+
+      for (let y = 0; y < totalHeight; y += blockHeight) {
+        let blockData = [];
+        let curBlockH = Math.min(blockHeight, totalHeight - y);
+
+        blockData.push(0x1D, 0x76, 0x30, 0x00);
+        blockData.push(bytesPerLine & 0xFF, (bytesPerLine >> 8) & 0xFF);
+        blockData.push(curBlockH & 0xFF, (curBlockH >> 8) & 0xFF);
+
+        for (let py = 0; py < curBlockH; py++) {
+          for (let x = 0; x < bytesPerLine; x++) {
+            let byte = 0;
+            for (let bit = 0; bit < 8; bit++) {
+              let pixelX = x * 8 + bit;
+              let idx = ((y + py) * TARGET_WIDTH + pixelX) * 4;
+              
+              if (pixelX < TARGET_WIDTH) {
+                let r = finalImageData[idx];
+                let g = finalImageData[idx + 1];
+                let b = finalImageData[idx + 2];
+                let avg = (r + g + b) / 3;
+
+                if (avg < 140) {
+                  byte |= (0x80 >> bit);
+                }
+              }
+            }
+            blockData.push(byte);
+          }
+        }
+
+        const chunkSize = 128;
+        for (let i = 0; i < blockData.length; i += chunkSize) {
+          const chunk = new Uint8Array(blockData.slice(i, i + chunkSize));
+          await characteristic.writeValue(chunk);
+        }
+        await new Promise(r => setTimeout(r, 35));
+      }
+
+      await characteristic.writeValue(new Uint8Array([0x1B, 0x64, 0x04]));
+      alert('Label Alamat berhasil dicetak!');
+    } catch (err) {
+      alert(`Gagal mencetak alamat: ${err.message}`);
+    } finally {
+      setIsPrinting(false);
+    }
   };
 
   return (
@@ -546,9 +653,10 @@ export default function App() {
             <button 
               onClick={handlePrintFreeText}
               disabled={isPrinting}
-              className="w-full bg-teal-800 text-white py-3 rounded-lg font-semibold hover:bg-teal-900 shadow transition"
+              className="w-full bg-teal-800 text-white py-3 rounded-lg font-semibold hover:bg-teal-900 shadow transition flex items-center justify-center gap-2"
             >
-              Cetak Teks Langsung
+              {isPrinting ? <Loader2 size={18} className="animate-spin" /> : <Printer size={18} />}
+              {isPrinting ? 'Mencetak...' : 'Cetak Teks Langsung'}
             </button>
           </div>
         )}
@@ -594,9 +702,10 @@ export default function App() {
             <button 
               onClick={handlePrintAddress}
               disabled={isPrinting}
-              className="w-full bg-teal-800 text-white py-3 rounded-lg font-semibold hover:bg-teal-900 shadow transition"
+              className="w-full bg-teal-800 text-white py-3 rounded-lg font-semibold hover:bg-teal-900 shadow transition flex items-center justify-center gap-2"
             >
-              Cetak Label Alamat
+              {isPrinting ? <Loader2 size={18} className="animate-spin" /> : <Printer size={18} />}
+              {isPrinting ? 'Mencetak...' : 'Cetak Label Alamat & Barcode'}
             </button>
           </div>
         )}
@@ -730,7 +839,7 @@ export default function App() {
               >
                 <option value="58">50mm / 58mm (Kecil)</option>
                 <option value="80">80mm (Smartcom Standard / RPP300)</option>
-                <option value="100">100mm / 104mm (Xprinter)</option>
+                <option value="100">100mm / 104mm (Xprinter 100mm)</option>
               </select>
             </div>
           </div>
