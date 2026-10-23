@@ -10,7 +10,8 @@ import {
   Search, 
   Loader2,
   Trash2,
-  Barcode
+  Barcode,
+  Sliders
 } from 'lucide-react';
 
 export default function App() {
@@ -43,6 +44,12 @@ export default function App() {
   const [pdfFileName, setPdfFileName] = useState('');
   const [isLoadingPdf, setIsLoadingPdf] = useState(false);
   
+  // STATE PILIHAN KONTRAS / FILTER
+  const [contrastMode, setContrastMode] = useState('threshold140');
+  
+  // Simpan data mentah file asli untuk dirender ulang saat mode kontras diganti
+  const [rawFileImage, setRawFileImage] = useState(null);
+
   const [generatedBarcodeText, setGeneratedBarcodeText] = useState(null);
   const [barcodeCanvasSrc, setBarcodeCanvasSrc] = useState(null);
 
@@ -79,32 +86,114 @@ export default function App() {
     return 384;
   };
 
-  const applyThermalMonochrome = (canvas) => {
+  // FUNGSI UTAMA FILTER KONTRAS & DITHERING
+  const applyContrastFilter = (canvas, mode) => {
     const ctx = canvas.getContext('2d');
     const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
     const data = imgData.data;
+    const width = canvas.width;
+    const height = canvas.height;
 
-    for (let i = 0; i < data.length; i += 4) {
-      const r = data[i];
-      const g = data[i + 1];
-      const b = data[i + 2];
-      const avg = (r + g + b) / 3;
+    // 1. Ubah ke Grayscale dulu
+    const gray = new Float32Array(width * height);
+    for (let i = 0, j = 0; i < data.length; i += 4, j++) {
+      gray[j] = (data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114);
+    }
 
-      const bw = avg < 140 ? 0 : 255;
-      data[i] = bw;
-      data[i + 1] = bw;
-      data[i + 2] = bw;
+    if (mode === 'none') {
+      // Ubah ukuran saja (Grayscale murni)
+      for (let i = 0, j = 0; i < data.length; i += 4, j++) {
+        let val = gray[j];
+        data[i] = val; data[i + 1] = val; data[i + 2] = val;
+      }
+    } 
+    else if (mode === 'threshold127' || mode === 'threshold140') {
+      const limit = mode === 'threshold140' ? 140 : 127;
+      for (let i = 0, j = 0; i < data.length; i += 4, j++) {
+        let bw = gray[j] < limit ? 0 : 255;
+        data[i] = bw; data[i + 1] = bw; data[i + 2] = bw;
+      }
+    } 
+    else if (mode === 'atkinson') {
+      // Atkinson Dithering Algorithm
+      for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+          let idx = y * width + x;
+          let oldPixel = gray[idx];
+          let newPixel = oldPixel < 128 ? 0 : 255;
+          gray[idx] = newPixel;
+          let err = (oldPixel - newPixel) / 8;
+
+          if (x + 1 < width) gray[idx + 1] += err;
+          if (x + 2 < width) gray[idx + 2] += err;
+          if (y + 1 < height) {
+            if (x - 1 >= 0) gray[(y + 1) * width + (x - 1)] += err;
+            gray[(y + 1) * width + x] += err;
+            if (x + 1 < width) gray[(y + 1) * width + (x + 1)] += err;
+          }
+          if (y + 2 < height) gray[(y + 2) * width + x] += err;
+        }
+      }
+      for (let i = 0, j = 0; i < data.length; i += 4, j++) {
+        let bw = gray[j] < 128 ? 0 : 255;
+        data[i] = bw; data[i + 1] = bw; data[i + 2] = bw;
+      }
+    } 
+    else if (mode === 'floyd' || mode === 'dither') {
+      // Floyd-Steinberg Dithering
+      for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+          let idx = y * width + x;
+          let oldPixel = gray[idx];
+          let newPixel = oldPixel < 128 ? 0 : 255;
+          gray[idx] = newPixel;
+          let err = oldPixel - newPixel;
+
+          if (x + 1 < width) gray[idx + 1] += err * 7 / 16;
+          if (y + 1 < height) {
+            if (x - 1 >= 0) gray[(y + 1) * width + (x - 1)] += err * 3 / 16;
+            gray[(y + 1) * width + x] += err * 5 / 16;
+            if (x + 1 < width) gray[(y + 1) * width + (x + 1)] += err * 1 / 16;
+          }
+        }
+      }
+      for (let i = 0, j = 0; i < data.length; i += 4, j++) {
+        let bw = gray[j] < 128 ? 0 : 255;
+        data[i] = bw; data[i + 1] = bw; data[i + 2] = bw;
+      }
     }
 
     ctx.putImageData(imgData, 0, 0);
   };
 
-  const detectAndنGenerateBarcode = async (canvas) => {
-    setGeneratedBarcodeText(null);
-    setBarcodeCanvasSrc(null);
+  // RE-RENDER KETIKA PILIHAN KONTRAS DIGANTI
+  useEffect(() => {
+    if (!rawFileImage) return;
+    processAndDisplayImage(rawFileImage, contrastMode);
+  }, [contrastMode, printerSettings.paperSize]);
 
-    let foundCode = "JJ2001432099"; // Fallback default resi J&T
+  const processAndDisplayImage = (imgElement, mode) => {
+    const targetW = getTargetWidth();
+    const canvas = previewCanvasRef.current;
+    if (!canvas) return;
 
+    const maxH = 1400;
+    let targetH = Math.round((imgElement.height / imgElement.width) * targetW);
+    if (targetH > maxH) targetH = maxH;
+
+    canvas.width = targetW;
+    canvas.height = targetH;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(imgElement, 0, 0, targetW, targetH);
+
+    applyContrastFilter(canvas, mode);
+    setPreviewImageSrc(canvas.toDataURL('image/jpeg', 0.9));
+  };
+
+  const detectAndGenerateBarcode = async (canvas) => {
+    let foundCode = "JJ2001432099";
     try {
       if ('BarcodeDetector' in window) {
         const barcodeDetector = new window.BarcodeDetector({
@@ -116,14 +205,14 @@ export default function App() {
         }
       }
     } catch (e) {
-      console.log('BarcodeDetector fallback used:', e);
+      console.log('Barcode fallback:', e);
     }
 
     setGeneratedBarcodeText(foundCode);
-    renderGeneratedBarcode(foundCode);
+    renderGeneratedBarcode(foundCode, contrastMode);
   };
 
-  const renderGeneratedBarcode = (codeValue) => {
+  const renderGeneratedBarcode = (codeValue, mode) => {
     if (!window.JsBarcode) return;
     const bcCanvas = barcodeCanvasRef.current;
     if (!bcCanvas) return;
@@ -142,29 +231,26 @@ export default function App() {
         margin: 10
       });
 
-      applyThermalMonochrome(bcCanvas);
+      applyContrastFilter(bcCanvas, mode);
       setBarcodeCanvasSrc(bcCanvas.toDataURL('image/jpeg', 0.9));
     } catch (err) {
-      console.error('JsBarcode generate error:', err);
+      console.error('Barcode error:', err);
     }
   };
 
   const handleScanBluetooth = async () => {
     setBluetoothError(null);
     setIsScanningBluetooth(true);
-
     if (!navigator.bluetooth) {
-      setBluetoothError('Web Bluetooth tidak didukung.');
+      alert('Browser tidak mendukung Web Bluetooth.');
       setIsScanningBluetooth(false);
       return;
     }
-
     try {
       const device = await navigator.bluetooth.requestDevice({
         acceptAllDevices: true,
         optionalServices: ['000018f0-0000-1000-8000-00805f9b34fb', '49535343-fe7d-4ae5-8fa9-9fafd205e455']
       });
-
       if (device) {
         setPrinterSettings(prev => ({
           ...prev,
@@ -174,9 +260,7 @@ export default function App() {
         setBluetoothStatus('connected');
       }
     } catch (err) {
-      if (err.name !== 'NotFoundError') {
-        setBluetoothError(`Gagal menghubungkan: ${err.message}`);
-      }
+      if (err.name !== 'NotFoundError') alert(`Gagal: ${err.message}`);
     } finally {
       setIsScanningBluetooth(false);
     }
@@ -187,14 +271,12 @@ export default function App() {
       alert('Browser tidak mendukung Web Bluetooth.');
       return;
     }
-
     setIsPrinting(true);
     try {
       const device = await navigator.bluetooth.requestDevice({
         acceptAllDevices: true,
         optionalServices: ['000018f0-0000-1000-8000-00805f9b34fb', '49535343-fe7d-4ae5-8fa9-9fafd205e455']
       });
-
       const server = await device.gatt.connect();
       const service = await server.getPrimaryService('000018f0-0000-1000-8000-00805f9b34fb');
       const characteristic = await service.getCharacteristic('00002af1-0000-1000-8000-00805f9b34fb');
@@ -205,10 +287,9 @@ export default function App() {
         await characteristic.writeValue(chunk);
         await new Promise(r => setTimeout(r, 20));
       }
-
-      alert('Berhasil dicetak langsung ke printer!');
+      alert('Berhasil dicetak!');
     } catch (err) {
-      alert(`Gagal mencetak: ${err.message}`);
+      alert(`Gagal: ${err.message}`);
     } finally {
       setIsPrinting(false);
     }
@@ -218,7 +299,7 @@ export default function App() {
     const canvasElement = previewCanvasRef.current;
     const barcodeElement = barcodeCanvasRef.current;
     if (!canvasElement) {
-      alert('Belum ada gambar atau dokumen yang dimuat!');
+      alert('Belum ada gambar!');
       return;
     }
 
@@ -230,13 +311,13 @@ export default function App() {
         acceptAllDevices: true,
         optionalServices: ['000018f0-0000-1000-8000-00805f9b34fb', '49535343-fe7d-4ae5-8fa9-9fafd205e455']
       });
-
       const server = await device.gatt.connect();
       const service = await server.getPrimaryService('000018f0-0000-1000-8000-00805f9b34fb');
       const characteristic = await service.getCharacteristic('00002af1-0000-1000-8000-00805f9b34fb');
 
       await characteristic.writeValue(new Uint8Array([0x1B, 0x40]));
 
+      // Cetak Barcode Atas
       if (barcodeElement && generatedBarcodeText) {
         const bcCtx = barcodeElement.getContext('2d');
         const bcData = bcCtx.getImageData(0, 0, barcodeElement.width, barcodeElement.height).data;
@@ -246,7 +327,6 @@ export default function App() {
         for (let y = 0; y < barcodeElement.height; y += blockH) {
           let blockData = [];
           let curH = Math.min(blockH, barcodeElement.height - y);
-
           blockData.push(0x1D, 0x76, 0x30, 0x00);
           blockData.push(bcBytesPerLine & 0xFF, (bcBytesPerLine >> 8) & 0xFF);
           blockData.push(curH & 0xFF, (curH >> 8) & 0xFF);
@@ -257,23 +337,20 @@ export default function App() {
               for (let bit = 0; bit < 8; bit++) {
                 let pixelX = x * 8 + bit;
                 let idx = ((y + py) * barcodeElement.width + pixelX) * 4;
-                if (bcData[idx] < 140) {
-                  byte |= (0x80 >> bit);
-                }
+                if (bcData[idx] < 140) byte |= (0x80 >> bit);
               }
               blockData.push(byte);
             }
           }
-
           for (let i = 0; i < blockData.length; i += 128) {
-            const chunk = new Uint8Array(blockData.slice(i, i + 128));
-            await characteristic.writeValue(chunk);
+            await characteristic.writeValue(new Uint8Array(blockData.slice(i, i + 128)));
           }
           await new Promise(r => setTimeout(r, 30));
         }
-        await characteristic.writeValue(new Uint8Array([0x1B, 0x64, 0x03]));
+        await characteristic.writeValue(new Uint8Array([0x1B, 0x64, 0x02]));
       }
 
+      // Cetak Resi Utama
       const sourceCanvas = canvasElement;
       const scale = TARGET_WIDTH / sourceCanvas.width;
       const targetHeight = Math.round(sourceCanvas.height * scale);
@@ -282,20 +359,17 @@ export default function App() {
       printCanvas.width = TARGET_WIDTH;
       printCanvas.height = targetHeight;
       const pCtx = printCanvas.getContext('2d');
-
       pCtx.fillStyle = '#FFFFFF';
       pCtx.fillRect(0, 0, TARGET_WIDTH, targetHeight);
       pCtx.drawImage(sourceCanvas, 0, 0, TARGET_WIDTH, targetHeight);
 
       const imgData = pCtx.getImageData(0, 0, TARGET_WIDTH, targetHeight).data;
-
       const bytesPerLine = Math.ceil(TARGET_WIDTH / 8);
       const blockHeight = 16;
 
       for (let y = 0; y < targetHeight; y += blockHeight) {
         let blockData = [];
         let currentBlockHeight = Math.min(blockHeight, targetHeight - y);
-
         blockData.push(0x1D, 0x76, 0x30, 0x00);
         blockData.push(bytesPerLine & 0xFF, (bytesPerLine >> 8) & 0xFF);
         blockData.push(currentBlockHeight & 0xFF, (currentBlockHeight >> 8) & 0xFF);
@@ -306,31 +380,21 @@ export default function App() {
             for (let bit = 0; bit < 8; bit++) {
               let pixelX = x * 8 + bit;
               let idx = ((y + py) * TARGET_WIDTH + pixelX) * 4;
-              let r = imgData[idx];
-              let g = imgData[idx + 1];
-              let b = imgData[idx + 2];
-              
-              let avg = (r + g + b) / 3;
-              if (avg < 140) {
-                byte |= (0x80 >> bit);
-              }
+              if (imgData[idx] < 140) byte |= (0x80 >> bit);
             }
             blockData.push(byte);
           }
         }
-
-        const chunkSize = 128;
-        for (let i = 0; i < blockData.length; i += chunkSize) {
-          const chunk = new Uint8Array(blockData.slice(i, i + chunkSize));
-          await characteristic.writeValue(chunk);
+        for (let i = 0; i < blockData.length; i += 128) {
+          await characteristic.writeValue(new Uint8Array(blockData.slice(i, i + 128)));
         }
         await new Promise(r => setTimeout(r, 35));
       }
 
       await characteristic.writeValue(new Uint8Array([0x1B, 0x64, 0x04]));
-      alert('Resi + Barcode atas berhasil dicetak!');
+      alert('Resi berhasil dicetak!');
     } catch (err) {
-      alert(`Gagal mencetak: ${err.message}`);
+      alert(`Gagal: ${err.message}`);
     } finally {
       setIsPrinting(false);
     }
@@ -344,25 +408,9 @@ export default function App() {
     reader.onload = (event) => {
       const img = new Image();
       img.onload = async () => {
-        const targetW = getTargetWidth();
-        const canvas = previewCanvasRef.current;
-        if (!canvas) return;
-
-        const maxH = 1200;
-        let targetH = Math.round((img.height / img.width) * targetW);
-        if (targetH > maxH) targetH = maxH;
-
-        canvas.width = targetW;
-        canvas.height = targetH;
-        const ctx = canvas.getContext('2d');
-        ctx.fillStyle = '#FFFFFF';
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-        ctx.drawImage(img, 0, 0, targetW, targetH);
-
-        await detectAndنGenerateBarcode(canvas);
-
-        applyThermalMonochrome(canvas);
-        setPreviewImageSrc(canvas.toDataURL('image/jpeg', 0.9));
+        setRawFileImage(img);
+        processAndDisplayImage(img, contrastMode);
+        await detectAndGenerateBarcode(previewCanvasRef.current);
       };
       img.src = event.target.result;
     };
@@ -372,7 +420,6 @@ export default function App() {
   const handlePdfUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
-
     if (!window.pdfjsLib) {
       alert('Library PDF sedang dimuat...');
       return;
@@ -387,44 +434,32 @@ export default function App() {
       const page = await pdf.getPage(1);
 
       const targetW = getTargetWidth();
-      const viewport = page.getViewport({ scale: 1.5 });
-      const canvas = previewCanvasRef.current;
-      if (!canvas) return;
+      const viewport = page.getViewport({ scale: 2.0 });
+      const tempCanvas = document.createElement('canvas');
+      tempCanvas.width = viewport.width;
+      tempCanvas.height = viewport.height;
+      const tempCtx = tempCanvas.getContext('2d');
 
-      const scale = targetW / viewport.width;
-      const scaledViewport = page.getViewport({ scale: scale * 1.5 });
+      await page.render({ canvasContext: tempCtx, viewport }).promise;
 
-      canvas.width = targetW;
-      canvas.height = Math.round(scaledViewport.height);
-
-      const ctx = canvas.getContext('2d');
-      ctx.fillStyle = '#FFFFFF';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-      const renderContext = {
-        canvasContext: ctx,
-        viewport: scaledViewport
+      const img = new Image();
+      img.onload = async () => {
+        setRawFileImage(img);
+        processAndDisplayImage(img, contrastMode);
+        await detectAndGenerateBarcode(previewCanvasRef.current);
+        setIsLoadingPdf(false);
       };
-
-      await page.render(renderContext).promise;
-
-      await detectAndنGenerateBarcode(canvas);
-
-      applyThermalMonochrome(canvas);
-      setPreviewImageSrc(canvas.toDataURL('image/jpeg', 0.9));
+      img.src = tempCanvas.toDataURL();
     } catch (err) {
-      alert(`Gagal merender PDF: ${err.message}`);
-    } finally {
+      alert(`Gagal PDF: ${err.message}`);
       setIsLoadingPdf(false);
     }
   };
 
   const handlePrintFreeText = () => {
     if (!freeText.trim()) return;
-    let bytes = [0x1B, 0x40];
-    bytes.push(0x1D, 0x21, 0x00);
-    const encoder = new TextEncoder();
-    bytes = bytes.concat(Array.from(encoder.encode(freeText + '\n\n\n\n')));
+    let bytes = [0x1B, 0x40, 0x1D, 0x21, 0x00];
+    bytes = bytes.concat(Array.from(new TextEncoder().encode(freeText + '\n\n\n\n')));
     sendDirectEscPosText(bytes);
   };
 
@@ -432,18 +467,14 @@ export default function App() {
     let bytes = [0x1B, 0x40];
     const encoder = new TextEncoder();
     const addText = (str, isBold = false, align = 0, size = 0x00) => {
-      bytes.push(0x1B, 0x61, align);
-      bytes.push(0x1B, 0x45, isBold ? 1 : 0);
-      bytes.push(0x1D, 0x21, size);
+      bytes.push(0x1B, 0x61, align, 0x1B, 0x45, isBold ? 1 : 0, 0x1D, 0x21, size);
       bytes = bytes.concat(Array.from(encoder.encode(str + '\n')));
     };
-
     addText(`KURIR: ${addressData.jasaKurir}`, true, 0, 0x11);
     addText(`BOOKING: ${addressData.kodeBooking}`, true, 0, 0x10);
     addText('--------------------------------', false, 0, 0x00);
     addText('PENERIMA:', true, 0, 0x00);
     addressData.penerima.split('\n').forEach(line => addText(line, false, 0, 0x00));
-    addText('--------------------------------', false, 0, 0x00);
     bytes.push(0x0A, 0x0A, 0x0A, 0x0A);
     sendDirectEscPosText(bytes);
   };
@@ -471,15 +502,11 @@ export default function App() {
             <textarea
               value={freeText}
               onChange={(e) => setFreeText(e.target.value)}
-              placeholder="Tulis teks bebas di sini..."
+              placeholder="Tulis teks bebas..."
               rows={8}
               className="w-full p-3 border rounded-lg bg-white"
             />
-            <button 
-              onClick={handlePrintFreeText}
-              disabled={isPrinting}
-              className="w-full bg-teal-800 text-white py-3 rounded-lg font-semibold"
-            >
+            <button onClick={handlePrintFreeText} disabled={isPrinting} className="w-full bg-teal-800 text-white py-3 rounded-lg font-semibold">
               Cetak Teks Langsung
             </button>
           </div>
@@ -487,17 +514,8 @@ export default function App() {
 
         {activeTab === 'alamat' && (
           <div className="space-y-3">
-            <textarea 
-              value={addressData.penerima} 
-              onChange={(e) => setAddressData({...addressData, penerima: e.target.value})} 
-              rows={3} 
-              className="w-full p-2 border rounded bg-white text-sm" 
-            />
-            <button 
-              onClick={handlePrintAddress}
-              disabled={isPrinting}
-              className="w-full bg-teal-800 text-white py-3 rounded-lg font-semibold"
-            >
+            <textarea value={addressData.penerima} onChange={(e) => setAddressData({...addressData, penerima: e.target.value})} rows={3} className="w-full p-2 border rounded bg-white text-sm" />
+            <button onClick={handlePrintAddress} disabled={isPrinting} className="w-full bg-teal-800 text-white py-3 rounded-lg font-semibold">
               Cetak Label Alamat
             </button>
           </div>
@@ -514,65 +532,61 @@ export default function App() {
               <div className="flex flex-col items-center justify-center p-8 border-2 border-dashed border-gray-300 rounded-lg bg-white space-y-3">
                 <Upload size={40} className="text-gray-400" />
                 <p className="text-sm text-gray-600 font-medium">Upload file resi</p>
-                <input 
-                  type="file" 
-                  accept={activeTab === 'image' ? 'image/*' : 'application/pdf'} 
-                  onChange={activeTab === 'image' ? handleImageUpload : handlePdfUpload}
-                  className="text-xs text-gray-500"
-                />
+                <input type="file" accept={activeTab === 'image' ? 'image/*' : 'application/pdf'} onChange={activeTab === 'image' ? handleImageUpload : handlePdfUpload} className="text-xs text-gray-500" />
               </div>
             ) : (
               <div className="space-y-3">
                 <div className="flex items-center justify-between bg-white p-2 px-3 rounded-lg border">
-                  <span className="text-xs font-semibold text-gray-700 truncate max-w-[200px]">
+                  <span className="text-xs font-semibold text-gray-700 truncate max-w-[180px]">
                     {pdfFileName || 'Resi Thermal'}
                   </span>
-                  <button 
-                    onClick={() => { 
-                      setPreviewImageSrc(null); 
-                      setPdfFileName(''); 
-                      setBarcodeCanvasSrc(null);
-                      setGeneratedBarcodeText(null);
-                    }} 
-                    className="text-red-600 text-xs flex items-center gap-1 font-medium"
-                  >
+                  <button onClick={() => { setPreviewImageSrc(null); setPdfFileName(''); setRawFileImage(null); setBarcodeCanvasSrc(null); }} className="text-red-600 text-xs flex items-center gap-1 font-medium">
                     <Trash2 size={14} /> Ganti File
                   </button>
                 </div>
 
-                {/* KOTAK BARCODE HASIL GENERATE ULANG DI BAGIAN ATAS */}
-                <div className="bg-white border-2 border-teal-800 rounded-lg p-3 text-center space-y-1 shadow-sm">
-                  <div className="flex items-center justify-center gap-1 text-teal-800 font-bold text-xs uppercase">
-                    <Barcode size={16} /> Barcode Di-generate Ulang (Diperbesar)
+                {/* DROPDOWN PILIHAN KONTRAS / FILTER HITAM PUTIH */}
+                <div className="flex items-center gap-2 bg-white p-2.5 rounded-lg border shadow-sm">
+                  <Sliders size={18} className="text-teal-800" />
+                  <div className="flex-1">
+                    <label className="text-[10px] font-bold text-gray-500 block uppercase">Mode Kontras & Filter</label>
+                    <select
+                      value={contrastMode}
+                      onChange={(e) => setContrastMode(e.target.value)}
+                      className="w-full text-xs font-semibold text-gray-800 bg-transparent focus:outline-none cursor-pointer"
+                    >
+                      <option value="threshold140">Kontras Terbaik (Threshold 140 - Paling Pekat)</option>
+                      <option value="threshold127">Standard (Threshold 127)</option>
+                      <option value="atkinson">Atkinson Dithering (Halus & Detail Foto)</option>
+                      <option value="floyd">Floyd-Steinberg (Dithering SF)</option>
+                      <option value="none">Ubah Ukuran Saja (Grayscale Asli)</option>
+                    </select>
                   </div>
-                  <div className="flex justify-center p-2 bg-white overflow-x-auto">
-                    {barcodeCanvasSrc ? (
-                      <img src={barcodeCanvasSrc} alt="Barcode Generated" className="max-h-24 object-contain border" />
-                    ) : (
-                      <canvas ref={barcodeCanvasRef} className="max-w-full"></canvas>
+                </div>
+
+                {/* KOTAK BARCODE ATAS */}
+                <div className="bg-white border-2 border-teal-800 rounded-lg p-2 text-center shadow-sm">
+                  <div className="flex justify-center bg-white overflow-x-auto">
+                    {barcodeCanvasSrc && (
+                      <img src={barcodeCanvasSrc} alt="Barcode" className="max-h-20 object-contain" />
                     )}
                   </div>
                 </div>
 
-                {/* KOTAK PREVIEW RESI UTAMA */}
-                <div className="border bg-gray-200 rounded-lg p-3 flex justify-center shadow-inner overflow-y-auto max-h-[350px]">
-                  <img src={previewImageSrc} alt="Preview Resi" className="max-w-full border border-gray-400 shadow-sm bg-white" />
+                {/* PREVIEW UTAMA */}
+                <div className="border bg-gray-200 rounded-lg p-3 flex justify-center shadow-inner overflow-y-auto max-h-[320px]">
+                  <img src={previewImageSrc} alt="Preview" className="max-w-full border shadow-sm bg-white" />
                 </div>
 
-                <button 
-                  onClick={handlePrintDocument}
-                  disabled={isPrinting}
-                  className="w-full bg-teal-800 text-white py-3 rounded-lg flex items-center justify-center gap-2 text-sm font-semibold hover:bg-teal-900 shadow transition"
-                >
+                <button onClick={handlePrintDocument} disabled={isPrinting} className="w-full bg-teal-800 text-white py-3 rounded-lg flex items-center justify-center gap-2 text-sm font-semibold hover:bg-teal-900 shadow transition">
                   {isPrinting ? <Loader2 size={18} className="animate-spin" /> : <Printer size={18} />}
-                  {isPrinting ? 'Mencetak Resi...' : 'Cetak Barcode Atas & Resi Sekarang'}
+                  {isPrinting ? 'Mencetak...' : 'Cetak Sekarang'}
                 </button>
               </div>
             )}
             
             <canvas ref={previewCanvasRef} style={{ display: 'none' }}></canvas>
-            {/* Canvas barcode sekarang tetap dirender di DOM agar JsBarcode membaca ukuran dengan benar */}
-            <canvas ref={barcodeCanvasRef} style={{ display: barcodeCanvasSrc ? 'none' : 'block', visibility: 'hidden', position: 'absolute' }}></canvas>
+            <canvas ref={barcodeCanvasRef} style={{ display: 'none' }}></canvas>
           </div>
         )}
 
@@ -586,11 +600,7 @@ export default function App() {
                     {printerSettings.printerName}
                   </span>
                 </div>
-                <button 
-                  onClick={handleScanBluetooth} 
-                  disabled={isScanningBluetooth} 
-                  className="bg-teal-800 text-white px-3 py-2 rounded-lg text-xs font-medium"
-                >
+                <button onClick={handleScanBluetooth} disabled={isScanningBluetooth} className="bg-teal-800 text-white px-3 py-2 rounded-lg text-xs font-medium">
                   {isScanningBluetooth ? <Loader2 size={16} className="animate-spin" /> : <Search size={16} />}
                   <span>Pindai</span>
                 </button>
