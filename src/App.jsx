@@ -47,9 +47,8 @@ export default function App() {
   const [pdfFileName, setPdfFileName] = useState('');
   const [isLoadingPdf, setIsLoadingPdf] = useState(false);
   
-  // STATE BARCODE TERDETEKSI
-  const [detectedBarcode, setDetectedBarcode] = useState(null); // String kode barcode jika ditemukan
-  const [barcodeCanvasSrc, setBarcodeCanvasSrc] = useState(null); // Preview gambar barcode terpisah
+  // STATE BARCODE ATAS
+  const [barcodeCanvasSrc, setBarcodeCanvasSrc] = useState(null);
 
   const previewCanvasRef = useRef(null);
   const barcodeCanvasRef = useRef(null);
@@ -60,7 +59,7 @@ export default function App() {
     localStorage.setItem('thermal_printer_settings', JSON.stringify(printerSettings));
   }, [printerSettings]);
 
-  // LOAD PDF.JS & JSBARCODE VIA CDN
+  // LOAD PDF.JS VIA CDN
   useEffect(() => {
     if (!window.pdfjsLib) {
       const scriptPdf = document.createElement('script');
@@ -70,15 +69,8 @@ export default function App() {
       };
       document.head.appendChild(scriptPdf);
     }
-
-    if (!window.JsBarcode) {
-      const scriptBc = document.createElement('script');
-      scriptBc.src = 'https://cdn.jsdelivr.net/npm/jsbarcode@3.11.5/dist/JsBarcode.all.min.js';
-      document.head.appendChild(scriptBc);
-    }
   }, []);
 
-  // HELPER MENDAPATKAN TARGET WIDTH (DOTS)
   const getTargetWidth = () => {
     const size = printerSettings.paperSize || '58';
     if (size === '80') return 576;  // 80mm
@@ -86,7 +78,6 @@ export default function App() {
     return 384;                     // 58mm / 50mm
   };
 
-  // HELPER MENGUBAH CANVAS JADI HITAM-PUTIH THERMAL PEKAT
   const applyThermalMonochrome = (canvas) => {
     const ctx = canvas.getContext('2d');
     const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
@@ -107,55 +98,36 @@ export default function App() {
     ctx.putImageData(imgData, 0, 0);
   };
 
-  // FUNGSI DETEKSI BARCODE DARI CANVAS
-  const detectBarcodeFromCanvas = async (canvas) => {
-    setDetectedBarcode(null);
-    setBarcodeCanvasSrc(null);
-
+  // FITUR AUTO-CROP AREA BARCODE ATAS DARI RESI (SMART HEADER EXTRACTION)
+  // Mengambil bagian atas resi (tempat barcode utama e-commerce berada) untuk ditaruh di atas
+  const extractBarcodeHeaderFromCanvas = (sourceCanvas) => {
     try {
-      if ('BarcodeDetector' in window) {
-        const barcodeDetector = new window.BarcodeDetector({
-          formats: ['code_128', 'code_39', 'ean_13', 'qr_code']
-        });
-        const barcodes = await barcodeDetector.detect(canvas);
-        if (barcodes && barcodes.length > 0) {
-          const codeVal = barcodes[0].rawValue;
-          setDetectedBarcode(codeVal);
-          generateBarcodePreview(codeVal);
-        }
-      }
-    } catch (e) {
-      console.log('Barcode detector error/unsupported:', e);
+      const targetW = getTargetWidth();
+      const bcCanvas = document.createElement('canvas');
+      
+      // Ambil 30% bagian atas resi tempat barcode utama berada
+      const cropHeight = Math.round(sourceCanvas.height * 0.32); 
+      bcCanvas.width = targetW;
+      bcCanvas.height = Math.round(cropHeight * (targetW / sourceCanvas.width));
+
+      const ctx = bcCanvas.getContext('2d');
+      ctx.fillStyle = '#FFFFFF';
+      ctx.fillRect(0, 0, bcCanvas.width, bcCanvas.height);
+      
+      // Gambar potongan bagian atas resi
+      ctx.drawImage(
+        sourceCanvas, 
+        0, 0, sourceCanvas.width, cropHeight, 
+        0, 0, bcCanvas.width, bcCanvas.height
+      );
+
+      applyThermalMonochrome(bcCanvas);
+      setBarcodeCanvasSrc(bcCanvas.toDataURL('image/jpeg', 0.9));
+    } catch (err) {
+      console.error('Gagal crop barcode atas:', err);
     }
   };
 
-  // GENERATE BARCODE DENGAN UKURAN LEBIH BESAR UNTUK PREVIEW TOP COLUMN
-  const generateBarcodePreview = (codeValue) => {
-    if (!codeValue) return;
-    const targetW = getTargetWidth();
-    const tempCanvas = document.createElement('canvas');
-
-    if (window.JsBarcode) {
-      try {
-        window.JsBarcode(tempCanvas, codeValue, {
-          format: 'CODE128',
-          width: 3,
-          height: 90,
-          displayValue: true,
-          fontSize: 16,
-          font: 'monospace',
-          margin: 10
-        });
-
-        applyThermalMonochrome(tempCanvas);
-        setBarcodeCanvasSrc(tempCanvas.toDataURL('image/jpeg', 0.9));
-      } catch (err) {
-        console.error('JsBarcode error:', err);
-      }
-    }
-  };
-
-  // FITUR PAIRING BLUETOOTH
   const handleScanBluetooth = async () => {
     setBluetoothError(null);
     setIsScanningBluetooth(true);
@@ -190,7 +162,6 @@ export default function App() {
     }
   };
 
-  // HELPER KIRIM ESC/POS TEKS
   const sendDirectEscPosText = async (binaryData) => {
     if (!navigator.bluetooth) {
       alert('Browser tidak mendukung Web Bluetooth.');
@@ -223,9 +194,10 @@ export default function App() {
     }
   };
 
-  // FUNGSI CETAK DOKUMEN / GAMBAR (TERMASUK BARCODE DI BAGIAN ATAS JIKA ADA)
+  // FUNGSI CETAK DOKUMEN / GAMBAR (CETAK HEADER BARCODE ATAS DULU, LALU RESI UTUH)
   const handlePrintDocument = async () => {
     const canvasElement = previewCanvasRef.current;
+    const barcodeElement = barcodeCanvasRef.current;
     if (!canvasElement) {
       alert('Belum ada gambar atau dokumen yang dimuat di preview!');
       return;
@@ -235,7 +207,6 @@ export default function App() {
       setIsPrinting(true);
       const TARGET_WIDTH = getTargetWidth();
 
-      // KONEKSI BLUETOOTH
       const device = await navigator.bluetooth.requestDevice({
         acceptAllDevices: true,
         optionalServices: ['000018f0-0000-1000-8000-00805f9b34fb', '49535343-fe7d-4ae5-8fa9-9fafd205e455']
@@ -247,29 +218,46 @@ export default function App() {
 
       await characteristic.writeValue(new Uint8Array([0x1B, 0x40])); // Reset printer
 
-      // 1. JIKA ADA BARCODE TERDETEKSI, CETAK BARCODE ATAS DULU
-      if (detectedBarcode) {
-        const encoder = new TextEncoder();
-        let bcCmd = [0x1B, 0x61, 0x01]; // Center align
-        bcCmd.push(0x1D, 0x68, 0x50); // Tinggi barcode (80 dots)
-        bcCmd.push(0x1D, 0x77, 0x03); // Lebar modul (3)
-        bcCmd.push(0x1D, 0x48, 0x02); // Tampilkan teks di bawah barcode
-        bcCmd.push(0x1D, 0x6B, 0x49); // Code128
+      // 1. CETAK BANNER BARCODE ATAS JIKA ADA
+      if (barcodeElement) {
+        const bcCtx = barcodeElement.getContext('2d');
+        const bcData = bcCtx.getImageData(0, 0, barcodeElement.width, barcodeElement.height).data;
+        const bcBytesPerLine = Math.ceil(barcodeElement.width / 8);
+        const blockH = 16;
 
-        const codeBytes = Array.from(encoder.encode(detectedBarcode));
-        bcCmd.push(codeBytes.length);
-        bcCmd = bcCmd.concat(codeBytes);
-        bcCmd.push(0x0A, 0x0A); // Feed garis pemisah
+        for (let y = 0; y < barcodeElement.height; y += blockH) {
+          let blockData = [];
+          let curH = Math.min(blockH, barcodeElement.height - y);
 
-        const bcChunkSize = 128;
-        for (let i = 0; i < bcCmd.length; i += bcChunkSize) {
-          const chunk = new Uint8Array(bcCmd.slice(i, i + bcChunkSize));
-          await characteristic.writeValue(chunk);
-          await new Promise(r => setTimeout(r, 20));
+          blockData.push(0x1D, 0x76, 0x30, 0x00);
+          blockData.push(bcBytesPerLine & 0xFF, (bcBytesPerLine >> 8) & 0xFF);
+          blockData.push(curH & 0xFF, (curH >> 8) & 0xFF);
+
+          for (let py = 0; py < curH; py++) {
+            for (let x = 0; x < bcBytesPerLine; x++) {
+              let byte = 0;
+              for (let bit = 0; bit < 8; bit++) {
+                let pixelX = x * 8 + bit;
+                let idx = ((y + py) * barcodeElement.width + pixelX) * 4;
+                if (bcData[idx] < 140) {
+                  byte |= (0x80 >> bit);
+                }
+              }
+              blockData.push(byte);
+            }
+          }
+
+          for (let i = 0; i < blockData.length; i += 128) {
+            const chunk = new Uint8Array(blockData.slice(i, i + 128));
+            await characteristic.writeValue(chunk);
+          }
+          await new Promise(r => setTimeout(r, 30));
         }
+        // Jeda pemisah antar banner barcode atas dan resi utama
+        await characteristic.writeValue(new Uint8Array([0x1B, 0x64, 0x02]));
       }
 
-      // 2. CETAK FISIK GAMBAR RESI LENGKAP
+      // 2. CETAK RESI UTAMA
       const sourceCanvas = canvasElement;
       const scale = TARGET_WIDTH / sourceCanvas.width;
       const targetHeight = Math.round(sourceCanvas.height * scale);
@@ -323,7 +311,7 @@ export default function App() {
         await new Promise(r => setTimeout(r, 35));
       }
 
-      await characteristic.writeValue(new Uint8Array([0x1B, 0x64, 0x04])); // Feed
+      await characteristic.writeValue(new Uint8Array([0x1B, 0x64, 0x04])); // Feed kertas
       alert('Resi + Barcode atas berhasil dicetak!');
     } catch (err) {
       alert(`Gagal mencetak resi: ${err.message}`);
@@ -332,7 +320,6 @@ export default function App() {
     }
   };
 
-  // HANDLER UPLOAD IMAGE DENGAN DETEKSI BARCODE
   const handleImageUpload = (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -340,7 +327,7 @@ export default function App() {
     const reader = new FileReader();
     reader.onload = (event) => {
       const img = new Image();
-      img.onload = async () => {
+      img.onload = () => {
         const targetW = getTargetWidth();
         const canvas = previewCanvasRef.current;
         if (!canvas) return;
@@ -356,12 +343,10 @@ export default function App() {
         ctx.fillRect(0, 0, canvas.width, canvas.height);
         ctx.drawImage(img, 0, 0, targetW, targetH);
 
-        // DETEKSI BARCODE
-        await detectBarcodeFromCanvas(canvas);
+        // EKSTRAK HEADER BARCODE ATAS
+        extractBarcodeHeaderFromCanvas(canvas);
 
-        // UBAH MONOKROM THERMAL
         applyThermalMonochrome(canvas);
-
         setPreviewImageSrc(canvas.toDataURL('image/jpeg', 0.9));
       };
       img.src = event.target.result;
@@ -369,7 +354,6 @@ export default function App() {
     reader.readAsDataURL(file);
   };
 
-  // HANDLER UPLOAD PDF DENGAN DETEKSI BARCODE
   const handlePdfUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -409,12 +393,10 @@ export default function App() {
 
       await page.render(renderContext).promise;
 
-      // DETEKSI BARCODE DARI HALAMAN PDF
-      await detectBarcodeFromCanvas(canvas);
+      // EKSTRAK HEADER BARCODE ATAS
+      extractBarcodeHeaderFromCanvas(canvas);
 
-      // UBAH MONOKROM THERMAL
       applyThermalMonochrome(canvas);
-
       setPreviewImageSrc(canvas.toDataURL('image/jpeg', 0.9));
     } catch (err) {
       alert(`Gagal merender PDF: ${err.message}`);
@@ -423,7 +405,6 @@ export default function App() {
     }
   };
 
-  // 1. CETAK TEKS BEBAS
   const handlePrintFreeText = () => {
     if (!freeText.trim()) {
       alert('Ketik teks terlebih dahulu!');
@@ -443,7 +424,6 @@ export default function App() {
     sendDirectEscPosText(bytes);
   };
 
-  // 2. CETAK ALAMAT
   const handlePrintAddress = () => {
     let bytes = [0x1B, 0x40];
     const encoder = new TextEncoder();
@@ -618,7 +598,6 @@ export default function App() {
                     onClick={() => { 
                       setPreviewImageSrc(null); 
                       setPdfFileName(''); 
-                      setDetectedBarcode(null);
                       setBarcodeCanvasSrc(null);
                     }} 
                     className="text-red-600 hover:text-red-800 text-xs flex items-center gap-1 font-medium"
@@ -627,22 +606,19 @@ export default function App() {
                   </button>
                 </div>
 
-                {/* KOLOM BARCODE RE-GENERATED PADA BAGIAN ATAS PREVIEW */}
+                {/* KOLOM BARCODE ATAS YANG DI-EXTRACT OTOMATIS */}
                 {barcodeCanvasSrc && (
                   <div className="bg-white border-2 border-teal-800 rounded-lg p-3 text-center space-y-1 shadow-sm">
                     <div className="flex items-center justify-center gap-1 text-teal-800 font-bold text-xs uppercase">
-                      <Barcode size={16} /> Barcode Terdeteksi (Ukuran Diperbesar)
+                      <Barcode size={16} /> Banner Barcode Atas (Diperbesar)
                     </div>
                     <div className="flex justify-center p-1 bg-white">
-                      <img src={barcodeCanvasSrc} alt="Barcode Diperbesar" className="max-h-24 object-contain" />
+                      <img src={barcodeCanvasSrc} alt="Barcode Header Atas" className="max-h-24 object-contain border" />
                     </div>
-                    <p className="text-xs font-mono font-semibold text-gray-700">
-                      {detectedBarcode}
-                    </p>
                   </div>
                 )}
 
-                {/* KOTAK PREVIEW HASIL RESI */}
+                {/* KOTAK PREVIEW UTAMA */}
                 <div className="border bg-gray-200 rounded-lg p-3 flex justify-center shadow-inner overflow-y-auto max-h-[350px]">
                   <img src={previewImageSrc} alt="Preview Monokrom Thermal" className="max-w-full border border-gray-400 shadow-sm bg-white" />
                 </div>
@@ -659,6 +635,7 @@ export default function App() {
             )}
             
             <canvas ref={previewCanvasRef} style={{ display: 'none' }}></canvas>
+            <canvas ref={barcodeCanvasRef} style={{ display: 'none' }}></canvas>
           </div>
         )}
 
