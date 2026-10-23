@@ -21,7 +21,7 @@ export default function App() {
     return saved ? JSON.parse(saved) : {
       printerName: 'Belum Terhubung',
       printerId: null,
-      paperSize: '80' // Default diset ke 80mm sesuai printer Smartcom kamu
+      paperSize: '80'
     };
   });
 
@@ -65,12 +65,35 @@ export default function App() {
     }
   }, []);
 
-  // HELPER UNTUK MENDAPATKAN TARGET WIDTH (DOTS) BERDASARKAN SETTING KERTAS
+  // HELPER UNTUK MENDAPATKAN TARGET WIDTH (DOTS)
   const getTargetWidth = () => {
     const size = printerSettings.paperSize || '58';
-    if (size === '80') return 576;  // 80mm (Smartcom Anda)
+    if (size === '80') return 576;  // 80mm
     if (size === '100') return 800; // 100mm
     return 384;                     // 58mm / 50mm
+  };
+
+  // HELPER MENGUBAH CANVAS JADI HITAM-PUTIH THERMAL PEKAT (MONOCHROME THRESHOLDING)
+  const applyThermalMonochrome = (canvas) => {
+    const ctx = canvas.getContext('2d');
+    const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const data = imgData.data;
+
+    for (let i = 0; i < data.length; i += 4) {
+      const r = data[i];
+      const g = data[i + 1];
+      const b = data[i + 2];
+      const avg = (r + g + b) / 3;
+
+      // Ambang batas kontras (Threshold) untuk thermal printer
+      const bw = avg < 140 ? 0 : 255;
+      data[i] = bw;     // R
+      data[i + 1] = bw; // G
+      data[i + 2] = bw; // B
+      // Alpha (data[i + 3]) tetap 255
+    }
+
+    ctx.putImageData(imgData, 0, 0);
   };
 
   // FITUR PAIRING BLUETOOTH
@@ -179,7 +202,7 @@ export default function App() {
       await characteristic.writeValue(new Uint8Array([0x1B, 0x40])); // Reset printer
 
       const bytesPerLine = Math.ceil(TARGET_WIDTH / 8);
-      const blockHeight = 16; // Diperkecil jadi 16 baris per kirim agar memori Smartcom sangat aman
+      const blockHeight = 16; 
 
       for (let y = 0; y < targetHeight; y += blockHeight) {
         let blockData = [];
@@ -213,12 +236,11 @@ export default function App() {
           const chunk = new Uint8Array(blockData.slice(i, i + chunkSize));
           await characteristic.writeValue(chunk);
         }
-        // Jeda diperlambat ke 35ms agar Smartcom tidak muntah karakter aneh
         await new Promise(r => setTimeout(r, 35));
       }
 
       await characteristic.writeValue(new Uint8Array([0x1B, 0x64, 0x04])); // Feed kertas
-      alert('Resi berhasil dicetak utuh tanpa teks aneh!');
+      alert('Resi berhasil dicetak utuh!');
     } catch (err) {
       alert(`Gagal mencetak resi: ${err.message}`);
     } finally {
@@ -226,7 +248,7 @@ export default function App() {
     }
   };
 
-  // HANDLER UPLOAD IMAGE DENGAN OPTIMALISASI
+  // HANDLER UPLOAD IMAGE DENGAN PREVIEW HITAM PUTIH (THERMAL PREVIEW)
   const handleImageUpload = (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -249,14 +271,18 @@ export default function App() {
         ctx.fillStyle = '#FFFFFF';
         ctx.fillRect(0, 0, canvas.width, canvas.height);
         ctx.drawImage(img, 0, 0, targetW, targetH);
-        setPreviewImageSrc(canvas.toDataURL('image/jpeg', 0.8));
+
+        // UBAH CANVAS JADI HITAM PUTIH HASIL CETAK THERMAL
+        applyThermalMonochrome(canvas);
+
+        setPreviewImageSrc(canvas.toDataURL('image/jpeg', 0.9));
       };
       img.src = event.target.result;
     };
     reader.readAsDataURL(file);
   };
 
-  // HANDLER UPLOAD PDF
+  // HANDLER UPLOAD PDF DENGAN PREVIEW HITAM PUTIH (THERMAL PREVIEW)
   const handlePdfUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -295,7 +321,11 @@ export default function App() {
       };
 
       await page.render(renderContext).promise;
-      setPreviewImageSrc(canvas.toDataURL('image/jpeg', 0.8));
+
+      // UBAH CANVAS JADI HITAM PUTIH HASIL CETAK THERMAL
+      applyThermalMonochrome(canvas);
+
+      setPreviewImageSrc(canvas.toDataURL('image/jpeg', 0.9));
     } catch (err) {
       alert(`Gagal merender PDF: ${err.message}`);
     } finally {
@@ -467,7 +497,7 @@ export default function App() {
           </div>
         )}
 
-        {/* TAB 3 & 4: IMAGE & PDF */}
+        {/* TAB 3 & 4: IMAGE & PDF (PREVIEW HITAM PUTIH MONOKROM) */}
         {(activeTab === 'image' || activeTab === 'pdf') && (
           <div className="space-y-4">
             {isLoadingPdf ? (
@@ -492,7 +522,7 @@ export default function App() {
               <div className="space-y-3">
                 <div className="flex items-center justify-between bg-white p-2 px-3 rounded-lg border">
                   <span className="text-xs font-semibold text-gray-700 truncate max-w-[200px]">
-                    {pdfFileName || 'Preview Gambar Resi'}
+                    {pdfFileName || 'Preview Resi Thermal (Hitam Putih)'}
                   </span>
                   <button 
                     onClick={() => { setPreviewImageSrc(null); setPdfFileName(''); }} 
@@ -502,8 +532,9 @@ export default function App() {
                   </button>
                 </div>
 
-                <div className="border bg-white rounded-lg p-3 flex justify-center shadow-inner overflow-y-auto max-h-[380px]">
-                  <img src={previewImageSrc} alt="Preview Resi Asli" className="max-w-full border shadow-sm" />
+                {/* KOTAK PREVIEW HASIL MONOKROM HITAM PUTIH */}
+                <div className="border bg-gray-200 rounded-lg p-3 flex justify-center shadow-inner overflow-y-auto max-h-[380px]">
+                  <img src={previewImageSrc} alt="Preview Monokrom Thermal" className="max-w-full border border-gray-400 shadow-sm bg-white" />
                 </div>
 
                 <button 
