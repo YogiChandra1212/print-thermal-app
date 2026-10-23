@@ -77,15 +77,13 @@ export default function App() {
     }
   }, []);
 
-  // PERHITUNGAN DENSITY DOTS BERDASARKAN LEBAR KERTAS
   const getTargetWidth = () => {
     const size = printerSettings.paperSize || '80';
-    if (size === '100') return 800; // 100mm / 104mm (Xprinter)
-    if (size === '80') return 576;  // 80mm (Smartcom/RPP300)
-    return 384;                     // 58mm / 50mm
+    if (size === '100') return 800; // 100mm
+    if (size === '80') return 576;  // 80mm
+    return 384;                     // 58mm
   };
 
-  // FILTER KONTRAS HITAM PUTIH / DITHERING
   const applyContrastFilter = (canvas, mode) => {
     const ctx = canvas.getContext('2d');
     const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
@@ -168,7 +166,7 @@ export default function App() {
     const canvas = previewCanvasRef.current;
     if (!canvas) return;
 
-    const maxH = 1600;
+    const maxH = 1800;
     let targetH = Math.round((imgElement.height / imgElement.width) * targetW);
     if (targetH > maxH) targetH = maxH;
 
@@ -203,7 +201,6 @@ export default function App() {
     renderGeneratedBarcode(foundCode, contrastMode);
   };
 
-  // GENERATE BARCODE PRESISI CENTER & SKALA UKURAN KERTAS (58mm, 80mm, 100mm)
   const renderGeneratedBarcode = (codeValue, mode) => {
     if (!window.JsBarcode) return;
     const bcCanvas = barcodeCanvasRef.current;
@@ -214,10 +211,9 @@ export default function App() {
       bcCanvas.width = targetW;
       bcCanvas.height = 140;
 
-      // Hitung skala ketebalan garis barcode berdasarkan ukuran kertas
       let barWidthScale = 3;
-      if (targetW === 800) barWidthScale = 4; // 100mm lebih tebal
-      else if (targetW === 384) barWidthScale = 2; // 58mm
+      if (targetW === 800) barWidthScale = 4;
+      else if (targetW === 384) barWidthScale = 2;
 
       window.JsBarcode(bcCanvas, codeValue, {
         format: 'CODE128',
@@ -264,36 +260,6 @@ export default function App() {
     }
   };
 
-  const sendDirectEscPosText = async (binaryData) => {
-    if (!navigator.bluetooth) {
-      alert('Browser tidak mendukung Web Bluetooth.');
-      return;
-    }
-    setIsPrinting(true);
-    try {
-      const device = await navigator.bluetooth.requestDevice({
-        acceptAllDevices: true,
-        optionalServices: ['000018f0-0000-1000-8000-00805f9b34fb', '49535343-fe7d-4ae5-8fa9-9fafd205e455']
-      });
-      const server = await device.gatt.connect();
-      const service = await server.getPrimaryService('000018f0-0000-1000-8000-00805f9b34fb');
-      const characteristic = await service.getCharacteristic('00002af1-0000-1000-8000-00805f9b34fb');
-
-      const chunkSize = 128;
-      for (let i = 0; i < binaryData.length; i += chunkSize) {
-        const chunk = new Uint8Array(binaryData.slice(i, i + chunkSize));
-        await characteristic.writeValue(chunk);
-        await new Promise(r => setTimeout(r, 20));
-      }
-      alert('Berhasil dicetak!');
-    } catch (err) {
-      alert(`Gagal: ${err.message}`);
-    } finally {
-      setIsPrinting(false);
-    }
-  };
-
-  // FUNGSI UTAMA PENCETAKAN: MENGGABUNGKAN BARCODE + RESI DENGAN ALGORITMA UNIVERSAL (SMARTCOM & XPRINTER)
   const handlePrintDocument = async () => {
     const resiCanvas = previewCanvasRef.current;
     const barcodeCanvas = barcodeCanvasRef.current;
@@ -307,30 +273,26 @@ export default function App() {
       setIsPrinting(true);
       const TARGET_WIDTH = getTargetWidth();
 
-      // 1. BUAT KERTAS CANVAS UNIFIED (GABUNGAN BARCODE ATAS + RESI)
       const combinedCanvas = combinedCanvasRef.current;
       const bcH = barcodeCanvas ? barcodeCanvas.height : 0;
       const resiH = resiCanvas.height;
 
       combinedCanvas.width = TARGET_WIDTH;
-      combinedCanvas.height = bcH + resiH + 20; // Tambah ruang spasi
+      combinedCanvas.height = bcH + resiH + 20;
 
       const cCtx = combinedCanvas.getContext('2d');
       cCtx.fillStyle = '#FFFFFF';
       cCtx.fillRect(0, 0, combinedCanvas.width, combinedCanvas.height);
 
-      // Gambar Barcode Atas di Tengah (Centered)
       if (barcodeCanvas && generatedBarcodeText) {
         const bcDrawX = Math.round((TARGET_WIDTH - barcodeCanvas.width) / 2);
         cCtx.drawImage(barcodeCanvas, bcDrawX < 0 ? 0 : bcDrawX, 0);
       }
 
-      // Gambar Resi Utama di Bawah Barcode
       cCtx.drawImage(resiCanvas, 0, bcH + 10);
 
       const finalImageData = cCtx.getImageData(0, 0, TARGET_WIDTH, combinedCanvas.height).data;
 
-      // 2. KONEKSI WEB BLUETOOTH
       const device = await navigator.bluetooth.requestDevice({
         acceptAllDevices: true,
         optionalServices: ['000018f0-0000-1000-8000-00805f9b34fb', '49535343-fe7d-4ae5-8fa9-9fafd205e455']
@@ -339,19 +301,17 @@ export default function App() {
       const service = await server.getPrimaryService('000018f0-0000-1000-8000-00805f9b34fb');
       const characteristic = await service.getCharacteristic('00002af1-0000-1000-8000-00805f9b34fb');
 
-      // RESET PRINTER KE MODE GRAPHIC STANDARD
-      await characteristic.writeValue(new Uint8Array([0x1B, 0x40])); // ESC @ (Reset)
+      await characteristic.writeValue(new Uint8Array([0x1B, 0x40]));
       await new Promise(r => setTimeout(r, 50));
 
       const bytesPerLine = Math.ceil(TARGET_WIDTH / 8);
       const totalHeight = combinedCanvas.height;
-      const blockHeight = 16; // 16-line chunks paling aman untuk Xprinter & Smartcom
+      const blockHeight = 16;
 
       for (let y = 0; y < totalHeight; y += blockHeight) {
         let blockData = [];
         let curBlockH = Math.min(blockHeight, totalHeight - y);
 
-        // Header Command ESC/POS Raster (GS v 0)
         blockData.push(0x1D, 0x76, 0x30, 0x00);
         blockData.push(bytesPerLine & 0xFF, (bytesPerLine >> 8) & 0xFF);
         blockData.push(curBlockH & 0xFF, (curBlockH >> 8) & 0xFF);
@@ -378,7 +338,6 @@ export default function App() {
           }
         }
 
-        // Kirim Chunk Data via Bluetooth dengan Jeda Bernapas
         const chunkSize = 128;
         for (let i = 0; i < blockData.length; i += chunkSize) {
           const chunk = new Uint8Array(blockData.slice(i, i + chunkSize));
@@ -387,7 +346,6 @@ export default function App() {
         await new Promise(r => setTimeout(r, 35));
       }
 
-      // FEED KERTAS
       await characteristic.writeValue(new Uint8Array([0x1B, 0x64, 0x04]));
       alert('Resi + Barcode berhasil dicetak!');
     } catch (err) {
@@ -397,6 +355,7 @@ export default function App() {
     }
   };
 
+  // DIPERBAIKI: HANDLER UPLOAD IMAGE YANG LEBIH STABIL
   const handleImageUpload = (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -407,7 +366,15 @@ export default function App() {
       img.onload = async () => {
         setRawFileImage(img);
         processAndDisplayImage(img, contrastMode);
-        await detectAndGenerateBarcode(previewCanvasRef.current);
+        
+        setTimeout(async () => {
+          if (previewCanvasRef.current) {
+            await detectAndGenerateBarcode(previewCanvasRef.current);
+          }
+        }, 100);
+      };
+      img.onerror = () => {
+        alert('Gagal membaca file gambar.');
       };
       img.src = event.target.result;
     };
@@ -542,7 +509,6 @@ export default function App() {
                   </button>
                 </div>
 
-                {/* DROPDOWN PILIHAN KONTRAS */}
                 <div className="flex items-center gap-2 bg-white p-2.5 rounded-lg border shadow-sm">
                   <Sliders size={18} className="text-teal-800" />
                   <div className="flex-1">
@@ -561,7 +527,6 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* KOTAK PREVIEW BARCODE ATAS PRESISI CENTER */}
                 <div className="bg-white border-2 border-teal-800 rounded-lg p-2 text-center shadow-sm">
                   <div className="flex justify-center bg-white overflow-x-auto">
                     {barcodeCanvasSrc && (
@@ -570,7 +535,6 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* PREVIEW UTAMA */}
                 <div className="border bg-gray-200 rounded-lg p-3 flex justify-center shadow-inner overflow-y-auto max-h-[320px]">
                   <img src={previewImageSrc} alt="Preview" className="max-w-full border shadow-sm bg-white" />
                 </div>
