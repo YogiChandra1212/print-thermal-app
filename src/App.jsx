@@ -30,9 +30,11 @@ export default function App() {
   const [bluetoothStatus, setBluetoothStatus] = useState('disconnected');
   const [bluetoothError, setBluetoothError] = useState(null);
 
+  // STATE TEXT BEBAS SEMULA
   const [freeText, setFreeText] = useState('');
   const [textSize, setTextSize] = useState('normal');
 
+  // STATE ALAMAT SEMULA
   const [addressData, setAddressData] = useState({
     penerima: 'Andi Teile\nJl. Raya Saketi Km.07 Kp.Pagenggang Babakan Rt.020/002\nKab. Lebak, Banten, 42391',
     pengirim: 'Toko Berkah Utama\nJl. Merdeka No. 45 Tangerang',
@@ -50,14 +52,11 @@ export default function App() {
   const [generatedBarcodeText, setGeneratedBarcodeText] = useState(null);
   const [barcodeCanvasSrc, setBarcodeCanvasSrc] = useState(null);
 
-  // STATE UNTUK CROP BOX INTERAKTIF (PERSENTASE 0 - 100)
   const [cropBox, setCropBox] = useState({ top: 5, bottom: 70, left: 5, right: 95 });
-  const [isDragging, setIsDragging] = useState(null); // 'top', 'bottom', 'move', dll
 
   const previewCanvasRef = useRef(null);
   const barcodeCanvasRef = useRef(null);
   const combinedCanvasRef = useRef(null);
-  const containerRef = useRef(null);
 
   const [isPrinting, setIsPrinting] = useState(false);
 
@@ -84,7 +83,7 @@ export default function App() {
 
   const getTargetWidth = () => {
     const size = printerSettings.paperSize || '80';
-    if (size === '100') return 800;
+    if (size === '100') return 576; // Diubah ke 576 dots agar kompatibel penuh dengan buffer raster Xprinter & tidak blank putih
     if (size === '80') return 576;
     return 384;
   };
@@ -216,9 +215,7 @@ export default function App() {
       bcCanvas.width = targetW;
       bcCanvas.height = 140;
 
-      let barWidthScale = 3;
-      if (targetW === 800) barWidthScale = 4;
-      else if (targetW === 384) barWidthScale = 2;
+      let barWidthScale = targetW === 576 ? 3 : 2;
 
       window.JsBarcode(bcCanvas, codeValue, {
         format: 'CODE128',
@@ -265,7 +262,36 @@ export default function App() {
     }
   };
 
-  // FUNGSI UTAMA PENCETAKAN DENGAN HASIL CROP SESUAI KOTAK MERAH
+  const sendDirectEscPosText = async (binaryData) => {
+    if (!navigator.bluetooth) {
+      alert('Browser tidak mendukung Web Bluetooth.');
+      return;
+    }
+    setIsPrinting(true);
+    try {
+      const device = await navigator.bluetooth.requestDevice({
+        acceptAllDevices: true,
+        optionalServices: ['000018f0-0000-1000-8000-00805f9b34fb', '49535343-fe7d-4ae5-8fa9-9fafd205e455']
+      });
+      const server = await device.gatt.connect();
+      const service = await server.getPrimaryService('000018f0-0000-1000-8000-00805f9b34fb');
+      const characteristic = await service.getCharacteristic('00002af1-0000-1000-8000-00805f9b34fb');
+
+      const chunkSize = 128;
+      for (let i = 0; i < binaryData.length; i += chunkSize) {
+        const chunk = new Uint8Array(binaryData.slice(i, i + chunkSize));
+        await characteristic.writeValue(chunk);
+        await new Promise(r => setTimeout(r, 20));
+      }
+      alert('Berhasil dicetak!');
+    } catch (err) {
+      alert(`Gagal: ${err.message}`);
+    } finally {
+      setIsPrinting(false);
+    }
+  };
+
+  // PENCETAKAN IMAGE / PDF DENGAN STABILITAS XPRINTER & SMARTCOM
   const handlePrintDocument = async () => {
     const resiCanvas = previewCanvasRef.current;
     const barcodeCanvas = barcodeCanvasRef.current;
@@ -279,13 +305,11 @@ export default function App() {
       setIsPrinting(true);
       const TARGET_WIDTH = getTargetWidth();
 
-      // HITUNG AREA CROP BERDASARKAN KOTAK (CROP BOX)
       const cropX = Math.round((cropBox.left / 100) * resiCanvas.width);
       const cropY = Math.round((cropBox.top / 100) * resiCanvas.height);
       const cropW = Math.round(((cropBox.right - cropBox.left) / 100) * resiCanvas.width);
       const cropH = Math.round(((cropBox.bottom - cropBox.top) / 100) * resiCanvas.height);
 
-      // Buat canvas hasil crop
       const croppedCanvas = document.createElement('canvas');
       const scaleFactor = TARGET_WIDTH / cropW;
       croppedCanvas.width = TARGET_WIDTH;
@@ -328,12 +352,13 @@ export default function App() {
       const service = await server.getPrimaryService('000018f0-0000-1000-8000-00805f9b34fb');
       const characteristic = await service.getCharacteristic('00002af1-0000-1000-8000-00805f9b34fb');
 
+      // Reset Printer
       await characteristic.writeValue(new Uint8Array([0x1B, 0x40]));
-      await new Promise(r => setTimeout(r, 50));
+      await new Promise(r => setTimeout(r, 60));
 
       const bytesPerLine = Math.ceil(TARGET_WIDTH / 8);
       const totalHeight = combinedCanvas.height;
-      const blockHeight = 16;
+      const blockHeight = 24; // Dioptimalkan untuk Xprinter
 
       for (let y = 0; y < totalHeight; y += blockHeight) {
         let blockData = [];
@@ -370,11 +395,11 @@ export default function App() {
           const chunk = new Uint8Array(blockData.slice(i, i + chunkSize));
           await characteristic.writeValue(chunk);
         }
-        await new Promise(r => setTimeout(r, 35));
+        await new Promise(r => setTimeout(r, 40));
       }
 
       await characteristic.writeValue(new Uint8Array([0x1B, 0x64, 0x04]));
-      alert('Hasil Crop Resi berhasil dicetak!');
+      alert('Resi berhasil dicetak!');
     } catch (err) {
       alert(`Gagal mencetak: ${err.message}`);
     } finally {
@@ -443,25 +468,36 @@ export default function App() {
     }
   };
 
+  // FITUR TEXT BEBAS DIKEMBALIKAN SEPERTI SEMULA
   const handlePrintFreeText = () => {
     if (!freeText.trim()) return;
-    let bytes = [0x1B, 0x40, 0x1D, 0x21, 0x00];
-    bytes = bytes.concat(Array.from(new TextEncoder().encode(freeText + '\n\n\n\n')));
+    let bytes = [0x1B, 0x40];
+    bytes.push(0x1D, 0x21, textSize === 'large' ? 0x11 : 0x00);
+    const encoder = new TextEncoder();
+    bytes = bytes.concat(Array.from(encoder.encode(freeText + '\n\n\n\n')));
     sendDirectEscPosText(bytes);
   };
 
+  // FITUR ALAMAT DIKEMBALIKAN SEPERTI SEMULA
   const handlePrintAddress = () => {
     let bytes = [0x1B, 0x40];
     const encoder = new TextEncoder();
     const addText = (str, isBold = false, align = 0, size = 0x00) => {
-      bytes.push(0x1B, 0x61, align, 0x1B, 0x45, isBold ? 1 : 0, 0x1D, 0x21, size);
+      bytes.push(0x1B, 0x61, align);
+      bytes.push(0x1B, 0x45, isBold ? 1 : 0);
+      bytes.push(0x1D, 0x21, size);
       bytes = bytes.concat(Array.from(encoder.encode(str + '\n')));
     };
+
     addText(`KURIR: ${addressData.jasaKurir}`, true, 0, 0x11);
     addText(`BOOKING: ${addressData.kodeBooking}`, true, 0, 0x10);
     addText('--------------------------------', false, 0, 0x00);
+    addText('PENGIRIM:', true, 0, 0x00);
+    addressData.pengirim.split('\n').forEach(line => addText(line, false, 0, 0x00));
+    addText('--------------------------------', false, 0, 0x00);
     addText('PENERIMA:', true, 0, 0x00);
     addressData.penerima.split('\n').forEach(line => addText(line, false, 0, 0x00));
+    addText('--------------------------------', false, 0, 0x00);
     bytes.push(0x0A, 0x0A, 0x0A, 0x0A);
     sendDirectEscPosText(bytes);
   };
@@ -485,24 +521,81 @@ export default function App() {
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
         
         {activeTab === 'text' && (
-          <div className="space-y-4">
-            <textarea
-              value={freeText}
-              onChange={(e) => setFreeText(e.target.value)}
-              placeholder="Tulis teks bebas..."
-              rows={8}
-              className="w-full p-3 border rounded-lg bg-white"
-            />
-            <button onClick={handlePrintFreeText} disabled={isPrinting} className="w-full bg-teal-800 text-white py-3 rounded-lg font-semibold">
+          <div className="space-y-4 bg-white p-4 rounded-lg border shadow-sm">
+            <div>
+              <label className="text-xs font-bold text-gray-600 block mb-1">Ukuran Font</label>
+              <select 
+                value={textSize} 
+                onChange={(e) => setTextSize(e.target.value)}
+                className="w-full p-2.5 border rounded-lg text-sm bg-white"
+              >
+                <option value="normal">Normal</option>
+                <option value="large">Besar / Double</option>
+              </select>
+            </div>
+            <div>
+              <label className="text-xs font-bold text-gray-600 block mb-1">Isi Teks Bebas</label>
+              <textarea
+                value={freeText}
+                onChange={(e) => setFreeText(e.target.value)}
+                placeholder="Tulis teks bebas di sini..."
+                rows={6}
+                className="w-full p-3 border rounded-lg bg-white text-sm"
+              />
+            </div>
+            <button 
+              onClick={handlePrintFreeText}
+              disabled={isPrinting}
+              className="w-full bg-teal-800 text-white py-3 rounded-lg font-semibold hover:bg-teal-900 shadow transition"
+            >
               Cetak Teks Langsung
             </button>
           </div>
         )}
 
         {activeTab === 'alamat' && (
-          <div className="space-y-3">
-            <textarea value={addressData.penerima} onChange={(e) => setAddressData({...addressData, penerima: e.target.value})} rows={3} className="w-full p-2 border rounded bg-white text-sm" />
-            <button onClick={handlePrintAddress} disabled={isPrinting} className="w-full bg-teal-800 text-white py-3 rounded-lg font-semibold">
+          <div className="space-y-3 bg-white p-4 rounded-lg border shadow-sm">
+            <div>
+              <label className="text-xs font-bold text-gray-600 block mb-1">Jasa Kurir</label>
+              <input 
+                type="text" 
+                value={addressData.jasaKurir} 
+                onChange={(e) => setAddressData({...addressData, jasaKurir: e.target.value})} 
+                className="w-full p-2.5 border rounded text-sm bg-white font-semibold" 
+              />
+            </div>
+            <div>
+              <label className="text-xs font-bold text-gray-600 block mb-1">Kode Booking / Resi</label>
+              <input 
+                type="text" 
+                value={addressData.kodeBooking} 
+                onChange={(e) => setAddressData({...addressData, kodeBooking: e.target.value})} 
+                className="w-full p-2.5 border rounded text-sm bg-white font-mono font-bold" 
+              />
+            </div>
+            <div>
+              <label className="text-xs font-bold text-gray-600 block mb-1">Pengirim</label>
+              <textarea 
+                value={addressData.pengirim} 
+                onChange={(e) => setAddressData({...addressData, pengirim: e.target.value})} 
+                rows={2} 
+                className="w-full p-2.5 border rounded bg-white text-sm" 
+              />
+            </div>
+            <div>
+              <label className="text-xs font-bold text-gray-600 block mb-1">Penerima</label>
+              <textarea 
+                value={addressData.penerima} 
+                onChange={(e) => setAddressData({...addressData, penerima: e.target.value})} 
+                rows={3} 
+                className="w-full p-2.5 border rounded bg-white text-sm" 
+              />
+            </div>
+            <button 
+              onClick={handlePrintAddress}
+              disabled={isPrinting}
+              className="w-full bg-teal-800 text-white py-3 rounded-lg font-semibold hover:bg-teal-900 shadow transition"
+            >
               Cetak Label Alamat
             </button>
           </div>
@@ -550,7 +643,6 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* KOTAK BARCODE ATAS */}
                 <div className="bg-white border-2 border-teal-800 rounded-lg p-2 text-center shadow-sm">
                   <div className="flex justify-center bg-white overflow-x-auto">
                     {barcodeCanvasSrc && (
@@ -559,18 +651,15 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* KOTAK PREVIEW UTAMA DENGAN CROP SLIDER INTERAKTIF */}
                 <div className="space-y-2 bg-white p-3 rounded-lg border">
                   <div className="flex items-center justify-between text-xs font-bold text-gray-600">
                     <span className="flex items-center gap-1"><Crop size={14} /> Atur Batas Crop Resi</span>
                     <span className="text-[10px] text-teal-800 font-semibold">Geser slider untuk memotong bagian</span>
                   </div>
 
-                  {/* PREVIEW GAMBAR DENGAN OVERLAY CROP BOX */}
                   <div className="relative border bg-gray-300 rounded overflow-hidden flex justify-center max-h-[280px]">
                     <img src={previewImageSrc} alt="Preview Crop" className="max-w-full object-contain" />
                     
-                    {/* VISUAL KOTAK CROP MERAH DI ATAS GAMBAR */}
                     <div 
                       className="absolute border-2 border-red-500 bg-red-500/10 pointer-events-none"
                       style={{
@@ -582,7 +671,6 @@ export default function App() {
                     ></div>
                   </div>
 
-                  {/* SLIDER KONTROL CROP (ATAS & BAWAH) */}
                   <div className="grid grid-cols-2 gap-3 pt-2 text-xs">
                     <div>
                       <label className="text-[10px] font-bold text-gray-500 block">Potong Atas: {cropBox.top}%</label>
@@ -642,7 +730,7 @@ export default function App() {
               >
                 <option value="58">50mm / 58mm (Kecil)</option>
                 <option value="80">80mm (Smartcom Standard / RPP300)</option>
-                <option value="100">100mm / 104mm (Besar / Xprinter)</option>
+                <option value="100">100mm / 104mm (Xprinter)</option>
               </select>
             </div>
           </div>
